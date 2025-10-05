@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" href="/static/favicon.ico">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orion v2 Assistant</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="orb listening" id="orb">
+      <div class="orb listening" id="orb">
+        <div class="orb listening" id="orb">
+  <div class="mask"></div>
+</div>
+</div>
+
+    </div>
+    <h1>Orion v2 Assistant</h1>
+    <div id="status">Listening...</div>
+    <div class="input-container">
+      <input id="message" type="text" placeholder="Type your message...">
+      <button onclick="sendMessage()">Send</button><br>
+      </div><button onclick="startMic()">🎤 Speak</button>
+    <div>
+
+      <label for="micSelect">Microphone:</label>
+      <select id="micSelect"></select>
+    </div>
+  </div>
+<div id="log"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

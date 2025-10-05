@@ -1,0 +1,60 @@
+# --- Python build ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# --- Virtual environment ---
+.venv/
+env/
+venv/
+*.env
+.env*
+
+# --- Logs and temp files ---
+logs/
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# --- Models and data ---
+models/*.onnx
+models/*.pth
+models/*.pt
+models/*.npz
+models/*.npy
+models/cache/
+models/recordings/
+models/temp/
+tests/
+openWakeWord/*
+
+# --- Audio files and recordings ---
+*.wav
+*.mp3
+*.flac
+debug_input/
+recordings/
+datasets/
+augmented/
+
+# --- Local config / IDE ---
+.idea/
+.vscode/
+*.code-workspace
+openWakeWord/
+
+# --- Web assets build cache ---
+ui/static/*.map
+node_modules/
+npm-debug.log*
+hey_orion.onnx
+hey_orion.pth
+models/he_mt.py
