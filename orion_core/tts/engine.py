@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 from orion_core.tts.listener import Listener
 from orion_core.tts.transcriber import Transcriber
 from orion_core.tts import bridge
+import sounddevice as sd
 
 
 class SpeechEngine:

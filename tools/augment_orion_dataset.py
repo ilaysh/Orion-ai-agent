@@ -7,7 +7,7 @@ from pathlib import Path
 import traceback
 
 # ------------------ Config ------------------
-BASE_DIR = Path("models/merged")  # fixed typo from 'mmodels'
+BASE_DIR = Path("models/orion_dataset")  # fixed typo from 'mmodels'
 POS_DIR = BASE_DIR / "positives"
 NEG_DIR = BASE_DIR / "negatives"
 AUG_POS = BASE_DIR / "positives_aug"
@@ -74,8 +74,13 @@ def process_folder(in_dir, out_dir):
 
 # ------------------ Entry ------------------
 if __name__ == "__main__":
-    process_folder(POS_DIR, AUG_POS)
-    process_folder(NEG_DIR, AUG_NEG)
+    import sys
+    t = sys.argv[1] if len(sys.argv) > 1 else "all"
+
+    if t in ("all", "positives"):
+        process_folder(POS_DIR, AUG_POS)
+    if t in ("all", "negatives"):
+        process_folder(NEG_DIR, AUG_NEG)
 
     pos_count = len(list(AUG_POS.glob("*.wav")))
     neg_count = len(list(AUG_NEG.glob("*.wav")))

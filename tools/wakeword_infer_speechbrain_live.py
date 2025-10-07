@@ -1,17 +1,27 @@
+import os
 import numpy as np
 import sounddevice as sd
 import torch, torchaudio, time
+from datetime import datetime
+from collections import deque
 from speechbrain.inference import EncoderClassifier
-
-# ===== Settings =====
+import soundfile as sf
+from datetime import datetime
+        
+# ====== CONFIGURATION ======
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 1.0     # seconds
-THRESHOLD = 0.8
+THRESHOLD = 0.75         # wake-word confidence threshold
+ENERGY_MIN = 0.004         # skip chunks with RMS below this
+SMOOTH_WINDOW = 3         # rolling avg window (frames)
+DEBOUNCE_TIME = 1.5       # seconds to wait after detection
 MODEL_PATH = "models/orion_speechbrain_full_finetune.pt"
+LOG_TIMESTAMPS = True
+# ===========================
 
-# ===== Init =====
 print("🎧 Initializing SpeechBrain wake-word model...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 base = EncoderClassifier.from_hparams(
     source="speechbrain/google_speech_command_xvector",
     run_opts={"device": device}
@@ -27,7 +37,9 @@ base.load_state_dict(torch.load(MODEL_PATH, map_location=device))
 base.eval()
 print(f"✅ Model loaded: {MODEL_PATH}")
 
-# ===== Functions =====
+# Rolling average buffer for smoother detection
+conf_buffer = deque(maxlen=SMOOTH_WINDOW)
+
 def predict_chunk(wav_np: np.ndarray) -> float:
     """Run inference on raw waveform chunk"""
     wav = torch.tensor(wav_np, dtype=torch.float32)
@@ -47,18 +59,34 @@ def listen_once(duration=CHUNK_DURATION):
     sd.wait()
     return audio.squeeze()
 
-# ===== Main Loop =====
-print("🎤 Say 'Orion' to trigger (Ctrl+C to exit)\n")
+print("🎤 Listening for 'Orion' (Ctrl+C to exit)\n")
 try:
+    noise_floor = 0.002
+    
     while True:
         wav = listen_once()
+        wav = torchaudio.functional.highpass_biquad(torch.tensor(wav), SAMPLE_RATE, 100).numpy()
         energy = np.mean(np.abs(wav))
-        if energy < 0.005:   # skip silence
+
+        # Skip silence or low-energy ambient chunks
+        if energy < noise_floor * 1.5:
             continue
-        pred = predict_chunk(wav)
-        print(f"🧠 Prediction: {pred:.3f}")
-        if pred > THRESHOLD:
-            print("✅ Wake word detected!\n")
-            time.sleep(1.5)  # debounce
+    
+        noise_floor = 0.98 * noise_floor + 0.02 * energy
+        conf = predict_chunk(wav)
+        conf_buffer.append(conf)
+        avg_conf = np.mean(conf_buffer)
+
+        print(f"🧠 Prediction: {conf:.3f} | avg={avg_conf:.3f} | energy={energy:.3f}")
+
+        if conf > THRESHOLD or avg_conf > (THRESHOLD + 0.05):
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = f"logs/wake_trigger_{ts}.wav"
+            os.makedirs("logs", exist_ok=True)
+            sf.write(fname, wav, SAMPLE_RATE)
+            print(f"✅ [{ts}] Wake word detected! Saved: {fname}\n")
+            conf_buffer.clear()
+            time.sleep(DEBOUNCE_TIME)
+
 except KeyboardInterrupt:
     print("\n👋 Exiting.")

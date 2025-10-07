@@ -1,76 +1,104 @@
 import sounddevice as sd
 import soundfile as sf
-import os, time
+import time, os
 
-# =====================
-# Configuration
-# =====================
 SAMPLE_RATE = 16000
-DURATION = 1.5  # seconds per clip
-BASE_DIR = "models/orion"
-POS_DIR = os.path.join(BASE_DIR, "positives")
-NEG_DIR = os.path.join(BASE_DIR, "negatives")
+DURATION = 2.0   # seconds per clip
+BASE = "models/orion_dataset"
+POS_DIR = os.path.join(BASE, "positives")
+NEG_DIR = os.path.join(BASE, "negatives")
 os.makedirs(POS_DIR, exist_ok=True)
 os.makedirs(NEG_DIR, exist_ok=True)
 
-# =====================
-# Recording Helper
-# =====================
 def record_clip(filename):
-    print(f"🎙️ Recording... ({DURATION}s)")
-    audio = sd.rec(int(SAMPLE_RATE * DURATION), samplerate=SAMPLE_RATE, channels=1, dtype="float32")
+    print(f"🎙️ Recording {filename} ({DURATION}s)...")
+    audio = sd.rec(int(SAMPLE_RATE * DURATION),
+                   samplerate=SAMPLE_RATE,
+                   channels=1, dtype="float32")
     sd.wait()
     sf.write(filename, audio, SAMPLE_RATE)
-    print(f"✅ Saved: {filename}\n")
-    time.sleep(1)
+    print(f"✅ Saved {filename}\n")
+    time.sleep(0.8)
 
-# =====================
-# Instruction Sequences
-# =====================
-positive_prompts = [
+# ---------- PROMPTS ----------
+positives = [
     "Say clearly: 'Orion'",
+    "Say: 'Hey Orion'",
     "Say softly: 'Orion'",
-    "Say 'Orion' while facing away slightly",
-    "Say 'Orion' from a few meters away",
-    "Say 'Orion' with a fan or background noise on",
-    "Say 'Orion' while typing or moving a chair",
-    "Ask your wife to say 'Orion'",
-    "Ask your wife to say 'Orion' again, a bit louder",
-    "Say 'Hey Orion'",
-    "Say 'Orion' fast and low",
+    "Say: 'Orion' from 1 m away",
+    "Say: 'Orion' with fan noise",
+    "Say: 'Orion' while typing",
+    "Say: 'Hey Orion' loud",
+    "Say: 'Orion' normally again",
+    "Ask another person to say 'Orion'",
+    "Say: 'Orion' fast and quiet",
+    "Say: 'Orion' after a pause",
+    "Say: 'Orion' from another room",
+    "Say: 'Orion' with background music",
+    "Say: 'Orion' slowly",
+    "Say: 'Hey Orion' clearly",
+    "Say: 'Orion' from 2 m away",
+    "Say: 'Orion' quietly but clear",
+    "Say: 'Orion' with TV noise",
+    "Say: 'Orion' normal tone again",
+    "Say: 'Hey Orion' gently",
+    "Say: 'Orion' short and sharp",
+    "Say: 'Orion' with window open",
+    "Say: 'Orion' near the mic",
+    "Say: 'Orion' while walking",
+    "Say: 'Hey Orion' lower tone",
+    "Say: 'Orion' higher pitch",
+    "Say: 'Orion' mid-distance",
+    "Say: 'Orion' normally (again)",
+    "Say: 'Orion' whispering",
+    "Say: 'Orion' final sample",
 ]
 
-negative_prompts = [
-    "Stay silent for a moment (ambient noise only)",
-    "Say something else: 'Computer'",
-    "Say: 'Hey there'",
-    "Talk normally about your day for 1–2 seconds",
-    "Play a song in background for 1–2 seconds",
-    "Ask your wife to say something random (not 'Orion')",
-    "Make typing or chair movement sounds",
-    "Say: 'Ok Google'",
+negatives = [
+    "Stay silent (ambient noise)",
+    "Say: 'Google'",
+    "Say: 'Alexa'",
     "Say: 'Jarvis'",
+    "Say: 'Computer'",
+    "Talk about your day",
+    "Play short music clip",
+    "Move a chair / keyboard sounds",
+    "Ask someone to talk randomly",
+    "Cough or make noise",
     "Say: 'Weather today?'",
+    "Say random numbers",
+    "Say: 'Hey there'",
+    "Say: 'Hello world'",
+    "Say: 'Service'",
+    "Say: 'Orionis'",
+    "Say: 'Siri'",
+    "Say: 'Okay Google'",
+    "Say: 'Hey assistant'",
+    "Say: 'What's the time?'",
+    "Say: 'Lights on'",
+    "Say: 'Hey computer'",
+    "Say: 'Hey system'",
+    "Say: 'Cereal'",
+    "Say: 'Hey Google'",
+    "Say: 'Jarvis open browser'",
+    "Say: 'Music please'",
+    "Say: 'Hello'",
+    "Say: 'Temperature today'",
+    "Stay silent again (background)",
 ]
 
-# =====================
-# Guided Recording Loop
-# =====================
-print("\n=== Guided Wake Word Dataset Recorder ===")
-print("Press ENTER to start each instruction.\n")
+# ---------- MAIN ----------
+print("\n=== Orion Wake Word Recorder v2 ===")
+input("Press ENTER when ready.\n")
 
-# --- Positives ---
-print("🎯 Recording POSITIVES (Wake word: 'Orion')\n")
-for i, prompt in enumerate(positive_prompts, 1):
-    input(f"[{i}/{len(positive_prompts)}] {prompt}  → Press ENTER to record.")
+print("🎯 POSITIVE RECORDINGS (wake word: 'Orion')\n")
+for i, prompt in enumerate(positives, 1):
+    input(f"[{i}/{len(positives)}] {prompt} → ENTER to start.")
     record_clip(os.path.join(POS_DIR, f"orion_{i:02d}.wav"))
 
-# --- Negatives ---
-print("\n🚫 Recording NEGATIVES (non-wake words / background)\n")
-for i, prompt in enumerate(negative_prompts, 1):
-    input(f"[{i}/{len(negative_prompts)}] {prompt}  → Press ENTER to record.")
+print("\n🚫 NEGATIVE RECORDINGS (non-wake words)\n")
+for i, prompt in enumerate(negatives, 1):
+    input(f"[{i}/{len(negatives)}] {prompt} → ENTER to start.")
     record_clip(os.path.join(NEG_DIR, f"neg_{i:02d}.wav"))
 
-print("\n✅ All done! Your dataset is ready at:")
-print(f"  → {POS_DIR}")
-print(f"  → {NEG_DIR}")
+print("\n✅ All recordings complete. Files saved to:", BASE)

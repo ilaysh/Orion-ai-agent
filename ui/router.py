@@ -1,6 +1,7 @@
 # ui/router.py
 import asyncio
 import base64
+import contextlib
 from pathlib import Path
 import time
 
@@ -39,7 +40,7 @@ async def websocket_endpoint(ws: WebSocket):
     pump_task = None
     try:
         # start in idle; wake thread will flip to listening when fired
-        await ws.send_json({"type": "state", "state": orion.state})
+        await ws.send_json({"type": "state", "state": orion.state.name})
         pump_task = asyncio.create_task(_pump_events(ws))
 
         while True:
