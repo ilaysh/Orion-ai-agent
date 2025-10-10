@@ -1,177 +1,134 @@
 # orion_core/tts/engine.py
-import numpy as np
-from typing import Optional, Tuple
+from __future__ import annotations
+import asyncio
+import base64
+import traceback
+from orion_core.base_component import BaseComponent, ComponentState
+from orion_core.tts.speak import tts_bytes
 
-from orion_core.tts.listener import Listener
-from orion_core.tts.transcriber import Transcriber
-from orion_core.tts import bridge
-import sounddevice as sd
 
-
-class SpeechEngine:
+class SpeechEngine(BaseComponent):
     """
-    Streaming STT pipeline with energy validation:
-      - feed() audio chunks via Listener (Silero VAD)
-      - validate audio has sufficient energy (not silence)
-      - when silence is detected -> transcribe whole utterance
-      - normalize for Orion using bridge (Hebrew -> English for processing)
-      - return (english_text_for_orion, lang_hint)
+    Unified speech interface for Orion.
+    Provides:
+      - VAD-based recording (Silero)
+      - STT (speech to text)
+      - TTS (text to speech)
+      - Translation stubs
     """
+    name = "speech"
 
-    def __init__(
-        self,
-        sample_rate: int = 16000,
-        stt_model: str = "small",
-        debug: bool = False,
-    ) -> None:
-        self.sample_rate = sample_rate
-        self.debug = debug
+    def __init__(self):
+        super().__init__()
+        self.vad = None
+        self.stt_model = None
+        self.tts_ready = False
+        print("[SpeechEngine] Created instance.")
 
-        # VAD + stream accumulator
-        self.listener = Listener(sample_rate=sample_rate)
-        
-        # Try to calibrate ambient noise (optional, won't fail if no mic)
+    # ------------------------------------------------------------------ #
+    # INIT
+    # ------------------------------------------------------------------ #
+    async def init(self):
+        async with self._lock:
+            self.state = ComponentState.INITIALIZING
+            await self._report_state()
+            print("[SpeechEngine] 🚀 Initializing...")
+
+            try:
+                # Lazy import to avoid circular import
+                from orion_core.vad import SileroVAD
+                self.vad = SileroVAD()
+
+                # Load STT model (stub for now)
+                self.stt_model = await self._load_stt_model()
+
+                # Warm up TTS
+                _ =  tts_bytes("Orion system initializing")
+                self.tts_ready = True
+
+                self.state = ComponentState.READY
+                await self._report_state()
+                print("[SpeechEngine] ✅ All subsystems ready.")
+            except Exception as e:
+                traceback.print_exc()
+                self.state = ComponentState.ERROR
+                print(f"[SpeechEngine] ❌ Init failed: {e}")
+                await self._report_state()
+
+    async def _load_stt_model(self):
+        """Placeholder for Whisper or other STT models."""
+        await asyncio.sleep(0.2)
+        print("[SpeechEngine] 🧠 (Stub) STT model loaded.")
+        return "stt_model_stub"
+
+    # ------------------------------------------------------------------ #
+    # MAIN FUNCTIONS
+    # ------------------------------------------------------------------ #
+
+    async def transcribe(self) -> str:
+        """
+        Capture audio via VAD and transcribe to text.
+        """
+        if not self.vad:
+            print("[SpeechEngine] ⚠️ No VAD initialized.")
+            return ""
+
+        print("[SpeechEngine] 🎙️ Listening for speech...")
         try:
-            self.listener.calibrate_ambient(duration=1.0)
-        except:
-            if self.debug:
-                print("[ENGINE] Could not calibrate ambient noise")
+            # You will later replace this with your real VAD+mic pipeline.
+            # Example: audio = await self.vad.listen_once()
+            await asyncio.sleep(0.5)
+            print("[SpeechEngine] 🪄 Captured audio chunk. Running STT...")
 
-        # Whisper transcriber
-        self.transcriber = Transcriber(model_size=stt_model)
-
-        # Energy thresholds to filter out silence
-        self.min_energy_rms = 0.02  # Minimum RMS energy
-        self.min_energy_peak = 0.1  # Minimum peak amplitude
-        
-        # Track when we're outputting audio (to ignore echo)
-        self.is_speaking = False
-
-    def reset(self) -> None:
-        """Reset internal buffers & listener feed state."""
-        if hasattr(self.listener, "reset_feed"):
-            self.listener.reset_feed()
-
-    # inside class SpeechEngine
-    def reset_feed(self):
-        """Gracefully stop and reset the audio input stream."""
-        try:
-            if hasattr(self, "stream") and self.stream:
-                self.stream.stop_stream()
-                self.stream.close()
-                self.stream = None
-            print("[SpeechEngine] 🧹 Microphone stream reset.")
+            # Placeholder for Whisper STT
+            text = "hello world"
+            print(f"[SpeechEngine] 🗣️ Transcribed: {text}")
+            return text
         except Exception as e:
-            print(f"[SpeechEngine] ⚠️ Reset error: {e}")
-        
-    def _validate_audio_energy(self, wav: np.ndarray) -> bool:
+            print(f"[SpeechEngine] ❌ Transcription failed: {e}")
+            return ""
+
+    async def speak(self, text: str) -> str:
         """
-        Check if audio has sufficient energy to be real speech.
-        This prevents Whisper from hallucinating on silence/noise.
-        
-        Returns:
-            bool: True if audio seems like real speech
+        Convert text to speech and return audio bytes.
         """
-        # Calculate RMS (average energy)
-        rms = np.sqrt(np.mean(wav**2))
-        
-        # Calculate peak amplitude
-        peak = np.max(np.abs(wav))
-        
-        # Check dynamic range (difference between loud and quiet parts)
-        percentile_90 = np.percentile(np.abs(wav), 90)
-        percentile_10 = np.percentile(np.abs(wav), 10)
-        dynamic_range = percentile_90 - percentile_10
-        
-        has_energy = rms > self.min_energy_rms
-        has_peaks = peak > self.min_energy_peak
-        has_variation = dynamic_range > 0.01
-        
-        if self.debug:
-            print(f"[ENERGY] RMS={rms:.4f} Peak={peak:.4f} Range={dynamic_range:.4f}")
-            print(f"[ENERGY] Valid: energy={has_energy} peaks={has_peaks} variation={has_variation}")
-        
-        return has_energy and has_peaks and has_variation
+        if not self.tts_ready:
+            print("[SpeechEngine] ⚠️ TTS not initialized yet.")
+            return b""
 
-    def listen_and_transcribe(self) -> Tuple[str, Optional[str]]:
+        try:
+            audio_bytes = await tts_bytes(text)
+            print(f"[SpeechEngine] 🔊 Spoke: {text}")
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+            print(f"[SpeechEngine] 🔊 Encoded audio, type={type(audio_b64)}")
+            return audio_b64
+        except Exception as e:
+            print(f"[SpeechEngine] ❌ Speak error: {e}")
+            return b""
+
+    async def translate(self, text: str, target_lang: str = "en") -> str:
         """
-        Legacy one-shot mic mode (if you still use it elsewhere).
-        Uses listener.listen_once() then transcribes.
-        Returns *localized to English for Orion*.
+        Simple translation stub (can connect to model or MarianMT).
         """
-        wav_bytes = self.listener.listen_once()
-        if not wav_bytes:
-            return "", None
+        await asyncio.sleep(0.1)
+        print(f"[SpeechEngine] 🌐 Translating to {target_lang} (stub).")
+        return text
 
-        wav = np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # Validate energy before transcribing
-        if not self._validate_audio_energy(wav):
-            if self.debug:
-                print("[ONE-SHOT STT] Audio rejected - insufficient energy")
-            return "", None
-        
-        text = self.transcriber.transcribe(wav)
-        if self.debug:
-            print(f"[ONE-SHOT STT] raw='{text}'")
+    # ------------------------------------------------------------------ #
+    # LIFECYCLE CONTROL
+    # ------------------------------------------------------------------ #
 
-        eng_text, _lang_hint = text, "en"
-        return eng_text, _lang_hint
+    async def start(self):
+        async with self._lock:
+            if self.state != ComponentState.READY:
+                await self.init()
+            self.active = True
+            print("[SpeechEngine] ▶ Active.")
+            await self._report_state(extra={"active": True})
 
-    def transcribe_feed(self, audio_chunk: bytes) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Feed PCM16 chunks (bytes) from the client microphone.
-        When the user stops speaking (VAD silence), returns:
-           (english_text_for_orion, lang_hint)
-        Otherwise returns (None, None).
-        """
-        # Ask the listener to accumulate and decide when we have a full utterance
-        utterance_bytes = self.listener.feed(audio_chunk)
-        
-        if utterance_bytes is None:
-            # Still collecting speech / no end-of-utterance yet
-            return None, None
-
-        if self.debug:
-            print(f"[STREAM STT] Got utterance: {len(utterance_bytes)} bytes")
-
-        # Convert to float32 waveform in [-1, 1] for validation and transcription
-        wav = np.frombuffer(utterance_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-
-        # CRITICAL: Validate that this is actually speech, not silence/noise
-        if not self._validate_audio_energy(wav):
-            print("[STREAM STT] Utterance rejected - insufficient energy (probably silence)")
-            return None, None
-
-        # Save audio for debugging if needed
-        if self.debug:
-            import soundfile as sf
-            sf.write(f"debug_utterance_{len(utterance_bytes)}.wav", wav, self.sample_rate)
-
-        # Transcribe with Whisper - FORCE ENGLISH to avoid language detection issues
-        text = self.transcriber.transcribe(wav, language='en')
-        
-        if self.debug:
-            print(f"[STREAM STT] raw='{text}'")
-
-        if not text or not text.strip():
-            # Nothing meaningful recognized
-            return None, None
-
-        # Filter common hallucinations that Whisper produces on silence
-        hallucinations = [
-            "thank you", "thanks for watching", "bye", "bye-bye",
-            "you", ".", "...", "thank you for watching",
-            "thanks", "subscribe", "like and subscribe"
-        ]
-        
-        text_lower = text.lower().strip()
-        if text_lower in hallucinations:
-            print(f"[STREAM STT] Filtered hallucination: '{text}'")
-            return None, None
-
-        # Normalize for Orion
-        eng_text, lang_hint = text, "en"
-
-        # Return the English command for Orion + the original language hint
-        return eng_text, lang_hint
+    async def stop(self):
+        async with self._lock:
+            self.active = False
+            self.state = ComponentState.STOPPED
+            print("[SpeechEngine] ⏹ Stopped.")
+            await self._report_state(extra={"active": False})

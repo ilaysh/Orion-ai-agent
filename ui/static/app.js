@@ -1,4 +1,4 @@
-let ws;
+// let ws;
 let audioContext;
 let processorNode;
 
@@ -69,7 +69,7 @@ function connect() {
             log("Orion ▶ " + msg.text);
 
             if (msg.audio) {
-                playAudio(msg.audio);
+                playAudio(msg.audio,ws);
             }
         } else if (msg.type === "user_text") {
             log("You ▶ " + msg.text);
@@ -162,38 +162,73 @@ function sendMessage() {
     input.value = "";
 }
 
-function playAudio(b64) {
-    const audioBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-    const blob = new Blob([audioBytes], { type: "audio/wav" });
+function playAudio1(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.onended = () => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-                type: "playback_finished",
-                data: {}   // send an empty object so it’s always valid
-            }));
-        }
-        // Failsafe: if playback takes longer than expected
+    audio.play().catch(err => console.error("Playback failed:", err));
+}
 
-    };
+function playAudio(base64, ws) {
+    try {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        document.getElementById("status").textContent = "Status: speaking";
+        log("🔊 Playing response...");
+        // --- SAFETY NET ---
+        const watchdog = setTimeout(() => {
+            log("Client watchdog: forcing listening reset");
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                    JSON.stringify({
+                        type: "playback_finished",
+                        watchdog: true,
+                    })
+                );
+            }
+        }, 30000); // 30s fallback
 
-    const watchdog = setTimeout(() => {
-        log("Client watchdog: forcing listening reset");
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "playback_finished", watchdog: true }));
-        }
-    }, 30000); // 30s safety net    audio.onplay = () => clearTimeout(watchdog);
+        // --- NORMAL END ---
+        audio.onended = () => {
+            clearTimeout(watchdog);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                    JSON.stringify({
+                        type: "playback_finished",
+                        data: {},
+                    })
+                );
+            }
+        };
 
-    audio.onplay = () => clearTimeout(watchdog);
+        // --- PLAY START ---
+        audio.onplay = () => clearTimeout(watchdog);
 
-    audio.play();
+        // --- START PLAYBACK ---
+        audio.play().catch((err) => {
+            console.error("Playback failed:", err);
+            clearTimeout(watchdog);
+        });
+    } catch (err) {
+        console.error("playAudio decode error:", err);
+    }
 }
 
 function log(msg) {
-    const logDiv = document.getElementById("log");
-    logDiv.innerHTML += msg + "<br>";
-    logDiv.scrollTop = logDiv.scrollHeight;
+    const logEl = document.getElementById("log");
+    if (logEl) {
+        const line = document.createElement("div");
+        line.textContent = msg;
+        logEl.appendChild(line);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
 }
 
 // Start everything

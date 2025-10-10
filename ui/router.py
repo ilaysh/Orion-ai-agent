@@ -4,14 +4,27 @@ import base64
 import contextlib
 from pathlib import Path
 import time
-
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect,FastAPI
+from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import FileResponse
-
 from orion_core.core import OrionCore
 
 router = APIRouter()
 orion = OrionCore()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start Orion once the event loop is alive (modern FastAPI style)."""
+    print("[Router] 🔄 Starting Orion via lifespan hook...")
+    asyncio.create_task(orion._on_init())
+    yield
+    print("[Router] 🔻 Orion shutting down...")
+    await orion.shutdown()
+
+# Create the app and attach router
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)
+
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 

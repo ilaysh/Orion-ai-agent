@@ -1,169 +1,208 @@
-import asyncio
-import numpy as np
-import time
-from enum import Enum
-from orion_core.vad import SileroVAD
-from orion_core.wakeword import WakeWordThread
+# orion_core/core.py
+from __future__ import annotations
+import asyncio, time
+from enum import Enum, auto
+from typing import Optional
+from orion_core.base_component import BaseComponent
+from orion_core.tts.engine import SpeechEngine
+from orion_core.wakeword_component import WakeWordComponent
 
-
-class State(Enum):
-    IDLE = 1
-    LISTEN = 2
-    THINK = 3
-    SPEAK = 4
-
+class CoreState(Enum):
+    STARTUP = auto()
+    INITIALIZING = auto()
+    IDLE = auto()
+    LISTEN = auto()
+    THINK = auto()
+    SPEAK = auto()
+    ERROR = auto()
+    STOPPED = auto()
 
 class OrionCore:
-    def __init__(self, model_path="models/orion_speechbrain_full_finetune.pt"):
-        self.state = State.IDLE
-        self.app_loop = None
-        self.vad = SileroVAD()
-        self.wake = WakeWordThread(model_path, self._on_wake_detect)
-        self.wake.start()
+    def __init__(self):
+        print("[Core] 🚀 Orion initialization started (entered _on_init)")
+        self.state = CoreState.STARTUP
+        self.events: asyncio.Queue = asyncio.Queue()
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.engine: Optional[SpeechEngine] = None
+        self.wakeword: Optional[WakeWordComponent] = None
+        self.llm = None
+        self.db = None
+        self.face = None
 
-        # Audio buffers for VAD and capture
-        self._buf = np.zeros(0, dtype=np.float32)
-        self._last_speech_t = 0.0
-        self._sr = 16000
-        self._end_silence_s = 1.0
-        self._max_len_s = 15
+    # ------------------------- init -------------------------
+    def _not_ready(self) -> bool:
+        return (
+            self.engine is None
+            or not hasattr(self.engine, "is_ready")
+            or not self.engine.is_ready()
+        )
 
-        print("[Core] OrionCore initialized.")
+    async def _on_init(self):
+        print("[Core] 🚀 Orion initialization started")
+        self.loop = asyncio.get_running_loop()
+        self.state = CoreState.INITIALIZING
+        await self._broadcast_state("initializing")
+        await self.events.put("[Init] Orion system initializing...")
 
-    # ------------------------------------------------------------------ #
-    #                        WAKE WORD CALLBACK
-    # ------------------------------------------------------------------ #
-    def _on_wake_detect(self):
-        if self.state is not State.IDLE:
+        self.engine = SpeechEngine()
+        self.wakeword = WakeWordComponent()
+        self.engine.set_reporter(self._component_report)
+        self.wakeword.set_reporter(self._component_report)
+
+        await asyncio.gather(
+            self._safe_init("speech", self.engine.init),
+            self._safe_init("wakeword", self.wakeword.init),
+        )
+
+        # bind before start
+        self.wakeword.on_detect = self._on_wake_detect_sync
+        await self.wakeword.start()
+
+        if self.engine.is_ready() and self.wakeword.is_ready():
+            await self.events.put("[Init] ✅ All systems ready. Entering idle state.")
+            self.state = CoreState.IDLE
+            await self._broadcast_state("idle")
+            print("[Core] ✅ All systems ready.")
+        else:
+            await self.events.put("[Init] ⚠️ Some subsystems failed to initialize.")
+            self.state = CoreState.ERROR
+            await self._broadcast_state("error")
+
+    async def _safe_init(self, name: str, func):
+        try:
+            r = func()
+            if asyncio.iscoroutine(r):
+                await r
+        except Exception as e:
+            print(f"[Core] ⚠️ Failed to init {name}: {e}")
+
+    async def _component_report(self, name: str, ready: bool, extra: dict):
+        msg = f"[Init] {name.capitalize()}: {'ready ✅' if ready else 'initializing...'}"
+        print(msg)
+        await self.events.put(msg)
+
+    # ------------------------- wake integration -------------------------
+    def _on_wake_detect_sync(self):
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(self.handle_wake(), self.loop)
+        else:
+            print("[Core] ⚠️ event loop missing; cannot schedule handle_wake()")
+
+    async def handle_wake(self):
+        # strict single-command: only in IDLE
+        if self.state != CoreState.IDLE:
+            print(f"[Core] 🛑 Ignoring wake (busy: {self.state.name})")
+            return
+        if self._not_ready():
+            await self.events.put("[Core] still initializing… please wait.")
             return
 
         print("[Core] Wake-word detected → activating core")
-        self.state = State.LISTEN
-        self._ensure_loop()
+        self.state = CoreState.LISTEN
+        await self._broadcast_state("listening")
 
-        try:
-            self.wake.disarm()
-            self.wake._next_arm = time.time() + self.wake.cooldown_s
+        # mute wakeword while we listen/speak
+        if self.wakeword and self.wakeword.thread:
+            self.wakeword.thread.disarm()
 
-            # Notify UI
-            if hasattr(self, "ws"):
-                asyncio.run_coroutine_threadsafe(
-                    self.ws.send_json({"type": "state", "state": "listening"}),
-                    self.app_loop,
-                )
+        # capture + stt
+        text = await self.engine.transcribe()
+        if not text:
+            await self.events.put("[Core] ⚠️ No speech detected.")
+            self.state = CoreState.IDLE
+            await self._broadcast_state("idle")
+            if self.wakeword and self.wakeword.thread:
+                self.wakeword.thread.arm()
+            return
 
-            # Schedule async handling
-            asyncio.run_coroutine_threadsafe(self._handle_wake(), self.app_loop)
+        await self.events.put(f"You said: {text}")
 
-        except Exception as e:
-            print(f"[Core] Wake handling failed: {e}")
-            self.state = State.IDLE
-            if hasattr(self, "ws"):
-                asyncio.run_coroutine_threadsafe(
-                    self.ws.send_json({"type": "state", "state": "idle"}),
-                    self.app_loop,
-                )
-
-    # ------------------------------------------------------------------ #
-    #                        ASYNC PIPELINE
-    # ------------------------------------------------------------------ #
-    def _ensure_loop(self):
-        try:
-            self.app_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.app_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.app_loop)
-
-    async def _handle_wake(self):
-        print("[Core] 🧠 _handle_wake triggered")
-        self.state = State.LISTEN
-        await asyncio.sleep(0.2)
-
-        audio = await self.capture_until_silence()
-        text = await self.transcribe(audio)
+        self.state = CoreState.THINK
+        await self._broadcast_state("thinking")
         reply = await self.chat_reply(text)
-        await self.speak(reply)
+        await self.events.put(f"Orion: {reply}")
 
-        self.state = State.IDLE
-        self.wake.arm()
-        print("[Core] Back to IDLE")
+        self.state = CoreState.SPEAK
+        await self._broadcast_state("speaking")
+        audio_b64 = await self.engine.speak(reply)
+        if audio_b64:
+            await self.events.put({"type": "orion_reply", "text": reply, "audio": audio_b64})
+        # remain SPEAK until playback_finished()
 
-        # Push final state to UI
-        if hasattr(self, "ws"):
-            await self.ws.send_json({"type": "state", "state": "idle"})
+    # ------------------------- router path -------------------------
+    async def handle_user_audio(self, audio_chunk: bytes | None):
+        """
+        Router calls this with raw mic chunks.
+        SpeechEngine handles recording internally, so we ignore the chunk.
+        """
+        if self.state != CoreState.IDLE:
+            print(f"[Core] 🛑 Ignoring user audio (busy: {self.state.name})")
+            return
 
-    # ------------------------------------------------------------------ #
-    #                        STUBS (replace later)
-    # ------------------------------------------------------------------ #
-    async def capture_until_silence(self, max_len_s=10, end_silence_s=1.0):
-        print("[VAD] Capturing (stub, returning fake audio)...")
-        await asyncio.sleep(2.0)
-        return np.zeros(16000 * 2, dtype=np.float32)
+        self.state = CoreState.LISTEN
+        await self._broadcast_state("listening")
 
-    async def transcribe(self, audio):
-        print("[STT] (stub) transcribing...")
-        await asyncio.sleep(0.5)
-        return "hello world"
+        # also mute wakeword when manual audio comes in
+        if self.wakeword and self.wakeword.thread:
+            self.wakeword.thread.disarm()
 
-    async def chat_reply(self, text):
-        print(f"[Chat] You said: {text}")
-        await asyncio.sleep(0.5)
+        text = await self.engine.transcribe()  # ignore audio_chunk by design
+        if not text:
+            await self.events.put("[Core] ⚠️ No speech detected.")
+            self.state = CoreState.IDLE
+            await self._broadcast_state("idle")
+            if self.wakeword and self.wakeword.thread:
+                self.wakeword.thread.arm()
+            return
+
+        await self.events.put(f"You said: {text}")
+
+        self.state = CoreState.THINK
+        await self._broadcast_state("thinking")
+        reply = await self.chat_reply(text)
+
+        self.state = CoreState.SPEAK
+        await self._broadcast_state("speaking")
+        audio_b64 = await self.engine.speak(reply)
+        if audio_b64:
+            yield {"type": "orion_reply", "text": reply, "audio": audio_b64}
+        # remain SPEAK until playback_finished()
+
+    # ------------------------- playback end -------------------------
+    def playback_finished(self):
+        print("[Core] ▶ Playback finished.")
+        self.state = CoreState.IDLE
+        if self.wakeword and self.wakeword.thread:
+            try:
+                time.sleep(0.4)  # settle output audio
+                self.wakeword.thread.arm()
+                print("[Core] 🔁 Wakeword re-armed after playback.")
+            except Exception as e:
+                print(f"[Core] ⚠️ Failed to re-arm wakeword: {e}")
+
+    # ------------------------- stubs -------------------------
+    async def chat_reply(self, text: str) -> str:
+        await asyncio.sleep(0.1)
         return f"Very good sir, you said {text}"
 
-    async def speak(self, text):
-        print("[TTS]", text)
+    # ------------------------- helpers -------------------------
+    async def _broadcast_state(self, state: str):
+        await self.events.put({"type": "state", "state": state})
 
-        # --- send to client ---
-        if hasattr(self, "ws"):
-            try:
-                await self.ws.send_json({
-                    "type": "tts",
-                    "text": text
-                })
-            except Exception as e:
-                print(f"[Core] ⚠️ Could not send TTS to UI: {e}")
+    def _delayed_init(self):
+        asyncio.create_task(self._on_init())
 
-        await asyncio.sleep(1.0)  # keep delay for stub
+    # optional component helpers (kept for compatibility)
+    async def start_component(self, name: str):
+        comp = self._get_component(name)
+        if comp:
+            await comp.start()
 
-    # ------------------------------------------------------------------ #
-    #                        HELPER FUNCTIONS
-    # ------------------------------------------------------------------ #
-    def _is_speech(self, x: np.ndarray, th=0.005):
-        if x.size == 0:
-            return False
-        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-        rms = np.sqrt(np.mean(np.clip(x, -1.0, 1.0) ** 2))
-        return float(rms) > th
+    async def stop_component(self, name: str):
+        comp = self._get_component(name)
+        if comp:
+            await comp.stop()
 
-    async def handle_user_audio(self, audio_chunk: bytes):
-        chunk = np.frombuffer(audio_chunk, dtype=np.float32)
-
-        if self.state is not State.LISTEN:
-            return
-
-        self._buf = np.concatenate([self._buf, chunk])
-        if self._is_speech(chunk):
-            self._last_speech_t = time.time()
-
-        too_long = len(self._buf) >= self._sr * self._max_len_s
-        long_silence = (time.time() - self._last_speech_t) > self._end_silence_s
-
-        if not (too_long or long_silence):
-            return
-
-        audio = self._buf.copy()
-        self._buf = np.zeros(0, dtype=np.float32)
-        self.state = State.THINK
-        yield {"type": "state", "state": self.state.name}
-
-        text = await self.transcribe(audio)
-        yield {"type": "stt", "text": text}
-
-        reply = await self.chat_reply(text)
-        yield {"type": "reply", "text": reply}
-        await self.speak(reply)
-
-        self.state = State.IDLE
-        self.wake.arm()
-        print("[Core] Wake re-armed.")
-        yield {"type": "state", "state": self.state.name}
+    def _get_component(self, name: str) -> Optional[BaseComponent]:
+        lookup = {"speech": self.engine, "wakeword": self.wakeword}
+        return lookup.get(name)
