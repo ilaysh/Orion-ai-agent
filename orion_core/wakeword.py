@@ -1,6 +1,7 @@
 # orion_core/wakeword.py
 from __future__ import annotations
-import os, time
+import os
+import time
 from collections import deque
 from datetime import datetime
 from typing import Optional, Deque
@@ -9,6 +10,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchaudio
+from orion_core.torchaudio_compat import fix_torchaudio_backend
+fix_torchaudio_backend()
+
 from speechbrain.inference import EncoderClassifier
 import soundfile as sf
 
@@ -25,7 +29,8 @@ class WakeWordDetector:
         self,
         model_path: str = "models/orion_speechbrain_full_finetune.pt",
         sample_rate: int = 16000,
-        thresh: float = 0.90,          # stricter (use 0.75 if you want test default)
+        # stricter (use 0.75 if you want test default)
+        thresh: float = 0.90,
         avg_boost: float = 0.05,       # test used THRESHOLD+0.05
         smooth_window: int = 3,        # deque length like test
         debounce_s: float = 1.5,
@@ -58,15 +63,18 @@ class WakeWordDetector:
     #                             MODEL
     # ------------------------------------------------------------------ #
     def _load_model(self):
-        print(f"[Wake] Loading SpeechBrain model from {self.model_path} on {self._device} ...")
+        print(
+            f"[Wake] Loading SpeechBrain model from {self.model_path} on {self._device} ...")
         base = EncoderClassifier.from_hparams(
             source="speechbrain/google_speech_command_xvector",
             run_opts={"device": self._device}
         )
         # Replace last classifier to (in_dim -> 1) + Sigmoid, then load fine-tuned weights
-        last_linear = next(m for m in base.mods.classifier.modules() if isinstance(m, nn.Linear))
+        last_linear = next(
+            m for m in base.mods.classifier.modules() if isinstance(m, nn.Linear))
         in_dim = last_linear.in_features
-        base.mods.classifier = nn.Sequential(nn.Linear(in_dim, 1), nn.Sigmoid()).to(self._device)
+        base.mods.classifier = nn.Sequential(
+            nn.Linear(in_dim, 1), nn.Sigmoid()).to(self._device)
 
         state = torch.load(self.model_path, map_location=self._device)
         base.load_state_dict(state)
@@ -104,8 +112,10 @@ class WakeWordDetector:
         try:
             if isinstance(pcm_f32_mono, (bytes, bytearray)):
                 # Try float32 first
-                x = np.frombuffer(pcm_f32_mono, dtype=np.float32, count=len(pcm_f32_mono)//4)
-                looks_bad = (x.size == 0) or (not np.isfinite(x).all()) or (np.max(np.abs(x)) > 1.5)
+                x = np.frombuffer(pcm_f32_mono, dtype=np.float32,
+                                  count=len(pcm_f32_mono)//4)
+                looks_bad = (x.size == 0) or (not np.isfinite(
+                    x).all()) or (np.max(np.abs(x)) > 1.5)
                 if looks_bad:
                     i16 = np.frombuffer(pcm_f32_mono, dtype=np.int16)
                     if i16.size == 0:
@@ -151,9 +161,11 @@ class WakeWordDetector:
         gate = max(self._noise_floor * 1.5, 0.003)  # conservative minimum gate
 
         # helpful input stats (always log for now)
-        print(f"[Wake] In: len={wav.size}, min={np.min(wav):+0.4f}, max={np.max(wav):+0.4f}, mean={np.mean(wav):+0.4f}")
+        print(
+            f"[Wake] In: len={wav.size}, min={np.min(wav):+0.4f}, max={np.max(wav):+0.4f}, mean={np.mean(wav):+0.4f}")
         if raw_energy < gate:
-            print(f"[Wake] Energy {raw_energy:.4f} below gate {gate:.4f}, skipping eval.")
+            print(
+                f"[Wake] Energy {raw_energy:.4f} below gate {gate:.4f}, skipping eval.")
             # optional debug save of the skipped window
             if getattr(self, "_debug_save_all", False):
                 try:
@@ -166,7 +178,8 @@ class WakeWordDetector:
                     pass
             return False
 
-        print(f"[Wake] raw_energy={raw_energy:.4f}, noise_floor={old_nf:.4f}->{self._noise_floor:.4f}, gate={gate:.4f}")
+        print(
+            f"[Wake] raw_energy={raw_energy:.4f}, noise_floor={old_nf:.4f}->{self._noise_floor:.4f}, gate={gate:.4f}")
 
         # --- inference (same path as tester) ---
         try:
@@ -180,7 +193,8 @@ class WakeWordDetector:
         avg = float(np.mean(self._conf_buf)) if len(self._conf_buf) else conf
 
         # always log (you asked to log everything)
-        print(f"[Wake] conf={conf:.3f} | avg={avg:.3f} | energy={raw_energy:.4f}")
+        print(
+            f"[Wake] conf={conf:.3f} | avg={avg:.3f} | energy={raw_energy:.4f}")
 
         # optional: save every eval window for inspection
         if getattr(self, "_debug_save_all", False):
@@ -194,7 +208,8 @@ class WakeWordDetector:
                 pass
 
         # --- decision: threshold OR boosted rolling avg ---
-        fired = (conf >= self.THRESH) or (avg >= (self.THRESH + self.AVG_BOOST))
+        fired = (conf >= self.THRESH) or (
+            avg >= (self.THRESH + self.AVG_BOOST))
 
         if not fired:
             print("[Wake] Below thresholds, no fire.")
@@ -204,7 +219,8 @@ class WakeWordDetector:
         since = now - self._last_fire
         min_gap = max(self.debounce_s, self.cooldown_s)
         if since < min_gap:
-            print(f"[Wake] Fire suppressed by debounce/cooldown ({since:.2f}s < {min_gap:.2f}s).")
+            print(
+                f"[Wake] Fire suppressed by debounce/cooldown ({since:.2f}s < {min_gap:.2f}s).")
             return False
 
         # --- FIRE! ---
@@ -237,7 +253,8 @@ class WakeWordDetector:
 
         wav = torchaudio.functional.resample(wav, self.sr, 16000)
         with torch.no_grad():
-            conf = self._model.mods.classifier(self._model.encode_batch(wav)).item()
+            conf = self._model.mods.classifier(
+                self._model.encode_batch(wav)).item()
         return float(np.clip(conf, 0.0, 1.0))
 
     def _save_eval_wav(self, wav: np.ndarray, tag: str):
@@ -247,6 +264,7 @@ class WakeWordDetector:
             sf.write(f"logs/wake_eval_{tag}_{ts}.wav", wav, self.sr)
         except Exception:
             pass
+
     def _predict(self, wav: np.ndarray) -> float:
         """Run inference just like the live tester."""
         with torch.no_grad():

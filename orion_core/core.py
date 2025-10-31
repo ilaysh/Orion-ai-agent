@@ -148,20 +148,13 @@ class OrionCore:
     # inside orion_core/core.py
 
     async def handle_user_audio(self, audio_chunk: bytes):
-        """
-        Streamed audio from client or test mic.
-        Exact test-parity for wakeword path:
-        - IDLE: accumulate exactly 1.0s (16k) then call wakeword.feed(window)
-        - LISTEN: pass decoded PCM straight to engine.transcribe()
-        - THINK/SPEAK/other: ignore
-        """
         if self.engine is None or self.wakeword is None:
             return
 
         if self.state not in (CoreState.IDLE, CoreState.LISTEN):
             return
 
-        # --- decode to float32 mono [-1,1]; NO additional processing ---
+        # Decode to float32 mono
         try:
             chunk = self._decode_pcm_f32_mono(audio_chunk)
         except Exception as e:
@@ -170,9 +163,8 @@ class OrionCore:
         if chunk.size == 0:
             return
 
-        # --- Auto-detect and resample if incoming stream is 48 kHz ---
+        # Auto-resample if 48kHz
         def _guess_sample_rate(length: int) -> int:
-            # 1 s of 48 kHz audio ≈ 48000 samples, 16 kHz ≈ 16000
             if 40000 < length < 52000:
                 return 48000
             return 16000
@@ -187,15 +179,14 @@ class OrionCore:
 
         # --------------------------- IDLE → WAKEWORD ---------------------------
         if self.state == CoreState.IDLE:
-            # Accumulate exactly 1.0 s = 16000 samples
             if not hasattr(self, "_pcm_buf"):
                 self._pcm_buf = np.zeros(0, dtype=np.float32)
             if not hasattr(self, "_pcm_target"):
-                self._pcm_target = 16000  # 1 second @ 16 kHz (matches test)
+                self._pcm_target = 16000
 
             self._pcm_buf = np.concatenate([self._pcm_buf, chunk])
             if self._pcm_buf.size >= self._pcm_target:
-                window = self._pcm_buf[-self._pcm_target:]  # last 1 s
+                window = self._pcm_buf[-self._pcm_target:]
                 fired = self.wakeword.feed(window)
                 self._pcm_buf = np.zeros(0, dtype=np.float32)
 
@@ -208,33 +199,47 @@ class OrionCore:
 
         # --------------------------- LISTEN → STT ---------------------------
         if self.state == CoreState.LISTEN:
-            # Your SpeechEngine.transcribe expects PCM float32 numpy
             try:
-                # print timestamp of transcription hh:mm:ss
                 text = await self.engine.transcribe(chunk)
             except Exception as e:
                 print(f"[Core] ⚠️ STT error: {e}")
                 return
 
-            if not text:
+            # ✅ Case 1: final text returned
+            if text:
+                await self.events.put({"type": "user_text", "text": text})
+
+                self.state = CoreState.THINK
+                await self._broadcast_state("thinking")
+
+                reply = await self.chat_reply(text)
+                await self.events.put({"type": "orion_reply", "text": reply})
+
+                self.state = CoreState.SPEAK
+                await self._broadcast_state("speaking")
+
+                audio_b64 = await self.engine.speak(reply)
+                payload = {"type": "orion_reply", "text": reply}
+                if audio_b64:
+                    payload["audio"] = audio_b64
+                await self.events.put(payload)
+
+                # ✅ After speaking → return to idle and arm wakeword
+                self.state = CoreState.IDLE
+                await self._broadcast_state("idle")
+                self.wakeword.arm()
                 return
 
-            await self.events.put({"type": "user_text", "text": text})
+            # ✅ Case 2: engine ended stream but no text (silence cutoff)
+            if not self.engine._stream_active:
+                print("[Core] 🤫 No speech detected — back to IDLE")
+                self.state = CoreState.IDLE
+                await self._broadcast_state("idle")
+                self.wakeword.arm()
+                return
 
-            self.state = CoreState.THINK
-            await self._broadcast_state("thinking")
-
-            reply = await self.chat_reply(text)
-            await self.events.put({"type": "orion_reply", "text": reply})
-
-            self.state = CoreState.SPEAK
-            await self._broadcast_state("speaking")
-
-            audio_b64 = await self.engine.speak(reply)
-            payload = {"type": "orion_reply", "text": reply}
-            if audio_b64:
-                payload["audio"] = audio_b64
-            await self.events.put(payload)
+            # ✅ Case 3: no final text yet → let engine accumulate time
+            await asyncio.sleep(0)
             return
 
     # ------------------------- playback end -------------------------
