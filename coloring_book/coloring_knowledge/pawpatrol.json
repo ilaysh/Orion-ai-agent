@@ -1,0 +1,48 @@
+{
+    "show": "Paw Patrol",
+    "base_model": "stabilityai/sdxl-turbo",
+    "lora_scale": 0.9,
+    "bw_scale": 0.4,
+    "characters": [
+        {
+            "name": "Marshall",
+            "description": "Energetic Dalmatian firefighter pup who rides a red fire truck and loves helping others.",
+            "lora_id": "marshall.safetensors"
+        },
+        {
+            "name": "Chase",
+            "description": "Brave German Shepherd police pup who drives a blue police truck and keeps Adventure Bay safe.",
+            "lora_id": "chase.safetensors"
+        },
+        {
+            "name": "Skye",
+            "description": "Fearless cockapoo pilot pup with pink goggles who flies her helicopter to rescue friends.",
+            "lora_id": "skye.sefatensors"
+        },
+        {
+            "name": "Everest",
+            "description": "Snow rescue Husky pup who loves helping others on the icy mountain roads.",
+            "lora_id": "civitai:266911"
+        },
+        {
+            "name": "Rocky",
+            "description": "Eco-friendly pup who recycles and fixes things with his green recycling truck.",
+            "lora_id": null
+        },
+        {
+            "name": "Zuma",
+            "description": "Chocolate Labrador pup who loves water rescues and drives an orange hovercraft.",
+            "lora_id": null
+        },
+        {
+            "name": "Tracker",
+            "description": "Brave jungle pup with sharp hearing who drives a jeep and helps in forest rescues.",
+            "lora_id": null
+        },
+        {
+            "name": "Rubble",
+            "description": "Bulldog construction pup who builds with his yellow digger and helps rebuild the city.",
+            "lora_id": null
+        }
+    ]
+}

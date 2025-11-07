@@ -1,0 +1,31 @@
+{
+  "show": "Firebuds",
+  "base_model": "Lykon/dreamshaper-xl-1-0",
+  "characters": [
+    {
+      "name": "Bo Bayani",
+      "description": "Young boy who drives a red rescue vehicle, brave and always ready to help others.",
+      "lora_id": null
+    },
+    {
+      "name": "Flash",
+      "description": "Red fire truck vehicle partner of Bo, helpful and enthusiastic with a smiling face.",
+      "lora_id": null
+    },
+    {
+      "name": "Violet Vega",
+      "description": "Girl who drives a blue police vehicle, smart and caring team member.",
+      "lora_id": null
+    },
+    {
+      "name": "Axl",
+      "description": "Blue police car with sirens, Violet’s vehicle partner, energetic and loyal.",
+      "lora_id": null
+    },
+    {
+      "name": "Jayden",
+      "description": "Ambulance vehicle partner, white with blue stripes, gentle and quick to help friends in need.",
+      "lora_id": null
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+    "show": "Teenage Mutant Ninja Turtles",
+    "base_model": "stabilityai/sdxl-turbo",
+    "lora_scale": 0.9,
+    "bw_scale": 0.4,
+    "characters": [
+        {
+            "name": "Leonardo",
+            "description": "Disciplined blue-banded leader of the Teenage Mutant Ninja Turtles, wielding twin katanas. Calm, strategic, and protective of his brothers.",
+            "lora_id": "TMNT90s.safetensors"
+        },
+        {
+            "name": "Michelangelo",
+            "description": "Fun-loving orange-banded turtle with nunchaku and an energetic personality. Loves pizza, skateboarding, and making jokes.",
+            "lora_id": "TMNT90s.safetensors"
+        },
+        {
+            "name": "Donatello",
+            "description": "Purple-banded tech genius of the group, wielding a bo staff. Intelligent, inventive, and often building new gadgets for the team.",
+            "lora_id": "TMNT90s.safetensors"
+        },
+        {
+            "name": "Raphael",
+            "description": "Red-banded, strong, and rebellious turtle who fights with twin sai. Fiercely loyal but hot-headed, always ready for battle.",
+            "lora_id": "TMNT90s.safetensors"
+        },
+        {
+            "name": "Splinter",
+            "description": "Wise and calm mutant rat sensei who trained the turtles in ninjutsu. Acts as their father figure and mentor.",
+            "lora_id": null
+        },
+        {
+            "name": "April O'Neil",
+            "description": "Brave human ally of the turtles. Investigative journalist with a strong sense of justice, often assisting them in their missions.",
+            "lora_id": null
+        },
+        {
+            "name": "Casey Jones",
+            "description": "Vigilante ally of the turtles, known for his hockey mask and sports-equipment weapons. Tough and fearless.",
+            "lora_id": null
+        },
+        {
+            "name": "Shredder",
+            "description": "Armored arch-enemy of the turtles and leader of the Foot Clan. Ruthless, cunning, and skilled in martial arts.",
+            "lora_id": "TMNT90s.safetensors"
+        }
+    ]
+}

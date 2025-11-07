@@ -1,0 +1,31 @@
+{
+    "show": "Toy Story",
+    "base_model": "Lykon/dreamshaper-xl-1-0",
+    "characters": [
+        {
+            "name": "Woody",
+            "description": "Cowboy sheriff toy with a hat, boots and sheriff badge, friendly and brave leader.",
+            "lora_id": null
+        },
+        {
+            "name": "Buzz Lightyear",
+            "description": "Space ranger toy with white and green armor, purple headpiece, and extendable wings.",
+            "lora_id": null
+        },
+        {
+            "name": "Jessie",
+            "description": "Cowgirl toy with red hat and braid, energetic and adventurous spirit.",
+            "lora_id": null
+        },
+        {
+            "name": "Rex",
+            "description": "Green dinosaur toy, big but gentle, easily frightened yet brave when needed.",
+            "lora_id": null
+        },
+        {
+            "name": "Bo Peep",
+            "description": "Porcelain shepherdess toy with pink dress and blue cape, kind and clever.",
+            "lora_id": null
+        }
+    ]
+}
