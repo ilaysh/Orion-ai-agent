@@ -1,0 +1,31 @@
+{
+    "show": "Cars",
+    "base_model": "Lykon/dreamshaper-xl-1-0",
+    "characters": [
+        {
+            "name": "Lightning McQueen",
+            "description": "Red race car number 95, fast, confident and determined racer.",
+            "lora_id": null
+        },
+        {
+            "name": "Mater",
+            "description": "Rusty tow truck with a big smile and buck teeth, loyal and funny friend.",
+            "lora_id": null
+        },
+        {
+            "name": "Cruz Ramirez",
+            "description": "Bright yellow sports car, energetic and skilled trainer who helps others race.",
+            "lora_id": null
+        },
+        {
+            "name": "Doc Hudson",
+            "description": "Wise blue Hudson Hornet, retired racer and mentor to Lightning McQueen.",
+            "lora_id": null
+        },
+        {
+            "name": "Sally Carrera",
+            "description": "Blue Porsche 911, kind and supportive friend of Lightning McQueen.",
+            "lora_id": null
+        }
+    ]
+}
