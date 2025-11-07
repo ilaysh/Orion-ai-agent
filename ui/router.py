@@ -2,16 +2,31 @@
 import asyncio
 import base64
 import contextlib
-from pathlib import Path
+import os
 import time
+from datetime import datetime
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pathlib import Path
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, FastAPI
+from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import FileResponse
-
 from orion_core.core import OrionCore
 
 router = APIRouter()
 orion = OrionCore()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start Orion once the event loop is alive (modern FastAPI style)."""
+    print("[Router] 🔄 Starting Orion via lifespan hook...")
+    asyncio.create_task(orion._on_init())
+    yield
+    print("[Router] 🔻 Orion shutting down...")
+    await orion.shutdown()
+
+# Create the app and attach router
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -22,9 +37,7 @@ async def root():
 
 
 async def _pump_events(ws: WebSocket):
-    """
-    Background task to forward core events (state changes) to the UI.
-    """
+    """Background task to forward core events (state changes) to the UI."""
     try:
         while True:
             evt = await orion.events.get()
@@ -37,45 +50,82 @@ async def _pump_events(ws: WebSocket):
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    pump_task = None
+    pump_task = asyncio.create_task(_pump_events(ws))
+
     try:
-        # start in idle; wake thread will flip to listening when fired
+        # Send initial state to UI
+        print(f"[router] state:{orion.state.name} at {datetime.now().strftime('%H:%M:%S')}")
         await ws.send_json({"type": "state", "state": orion.state.name})
-        pump_task = asyncio.create_task(_pump_events(ws))
 
         while True:
             msg = await ws.receive_json()
+            msg_type = msg.get("type")
 
-            # --- user typed text ---
-            if msg.get("type") == "user_text":
-                async for reply in orion.handle_user_text(msg.get("text", "")):
-                    # when reply contains audio, switch UI to speaking
-                    if reply.get("type") == "orion_reply":
-                        await ws.send_json({"type": "state", "state": "speaking"})
+
+            # --- user typed text (manual input from UI) ---
+            if msg_type == "user_text":
+                user_text = msg.get("text", "")
+                reply = await orion.handle_user_text(user_text)
+                if reply and reply.get("type") == "orion_reply":
+                    await ws.send_json({"type": "state", "state": "speaking"})
+                if reply:
                     await ws.send_json(reply)
 
-            # --- user streamed audio ---
-            elif msg.get("type") == "user_audio":
-                # don’t let UI flood the server while speaking
-                if orion.state == "speaking":
-                    continue
-                # base64 -> bytes
+            # --- user streamed microphone audio ---
+            elif msg_type == "user_audio":
+                if orion.state.name.lower() == "speaking":
+                    continue  # skip while speaking
+                
                 audio_chunk = base64.b64decode(msg["audio"])
-                async for reply in orion.handle_user_audio(audio_chunk):
-                    if reply.get("type") == "orion_reply":
-                        await ws.send_json({"type": "state", "state": "speaking"})
+                reply = await orion.handle_user_audio(audio_chunk)
+                if reply and reply.get("type") == "orion_reply":
+                    print(f"[router] return tts {datetime.now().strftime('%H:%M:%S')}")
+                    await ws.send_json({"type": "state", "state": "speaking"})
+                if reply:
                     await ws.send_json(reply)
 
-            # --- browser completed playback ---
-            elif msg.get("type") == "playback_finished":
+            # --- playback finished ---
+            elif msg_type == "playback_finished":
                 orion.playback_finished()
-                # the core will emit a state event, but we also push immediately
                 await ws.send_json({"type": "state", "state": "idle"})
 
+            elif msg.get("type") == "diagnostic_audio":
+                try:
+                    b64 = msg.get("audio", "")
+                    sr = int(msg.get("sampleRate", 16000))
+                    raw = base64.b64decode(b64)
+                    os.makedirs("logs", exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    fname = f"logs/diag_js_{ts}.wav"
+                    import struct
+                    import wave
+                    import io
+                    buf = io.BytesIO()
+                    with wave.open(buf, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(4)      # float32 = 4 bytes
+                        wf.setframerate(sr)
+                        wf.writeframes(raw)
+                    data = buf.getvalue()
+
+                    with open(fname, "wb") as f:
+                        f.write(data)
+                    # Acknowledge back (and optionally echo to play via blob URL client already set)
+                    await ws.send_json({
+                        "type": "diagnostic_saved",
+                        "file": fname,
+                        "sampleRate": sr,
+                        "bytes": len(raw),
+                    })
+                except Exception as e:
+                    await ws.send_json({
+                        "type": "diagnostic_error",
+                        "error": str(e),
+                    })
+
     except WebSocketDisconnect:
-        pass
+        print("[Router] ⚠️ WebSocket disconnected")
     finally:
-        if pump_task:
-            pump_task.cancel()
-            with contextlib.suppress(Exception):
-                await pump_task
+        pump_task.cancel()
+        with contextlib.suppress(Exception):
+            await pump_task

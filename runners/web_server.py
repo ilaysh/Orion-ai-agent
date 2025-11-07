@@ -1,27 +1,27 @@
 
+import asyncio
 from fastapi import FastAPI
+from fastapi.concurrency import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from ui.router import router as web_router
+from ui.router import router as web_router, orion
 
-app = FastAPI(title="Orion v2")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("[WebServer] 🔄 lifespan start")
+    asyncio.create_task(orion._on_init())   # run init when loop is alive
+    yield
+    print("[WebServer] 🔻 lifespan stop")
+    await orion.shutdown()
 
-# ---- CORS settings ----
-# during dev we allow everything, later we’ll restrict to localhost only
+app = FastAPI(title="Orion v2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can replace with ["http://localhost:8080", "http://127.0.0.1:8080"]
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
-
-# ---- Static files ----
 app.mount("/static", StaticFiles(directory="ui/static"), name="static")
-
-# ---- API + WebSocket router ----
 app.include_router(web_router)
 
 if __name__ == "__main__":

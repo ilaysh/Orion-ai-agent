@@ -1,177 +1,190 @@
-# orion_core/tts/engine.py
+import os
+import time
+import asyncio
+import wave
+import contextlib
 import numpy as np
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional
 
-from orion_core.tts.listener import Listener
+from orion_core.base_component import BaseComponent
+from orion_core.tts.vad import VADEngine
 from orion_core.tts.transcriber import Transcriber
-from orion_core.tts import bridge
-import sounddevice as sd
+
+# optional mic dependency
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
 
 
-class SpeechEngine:
-    """
-    Streaming STT pipeline with energy validation:
-      - feed() audio chunks via Listener (Silero VAD)
-      - validate audio has sufficient energy (not silence)
-      - when silence is detected -> transcribe whole utterance
-      - normalize for Orion using bridge (Hebrew -> English for processing)
-      - return (english_text_for_orion, lang_hint)
-    """
+@dataclass
+class STTDebug:
+    save_wavs: bool = True
+    dir: str = "logs/stt_debug"
 
+
+class SpeechEngine(BaseComponent):
     def __init__(
         self,
-        sample_rate: int = 16000,
-        stt_model: str = "small",
-        debug: bool = False,
+        sr: int = 16000,
+        transcriber: Optional[Transcriber] = None,
+        vad: Optional[VADEngine] = None,
+        debug: Optional[STTDebug] = None,
+        min_capture_sec: float = 1.2,
+        hard_timeout_sec: float = 8.0,
+        min_avg_energy: float = 0.0025,
+        frame_ms: int = 30,
     ) -> None:
-        self.sample_rate = sample_rate
-        self.debug = debug
+        super().__init__()
+        self._stream_active = False
+        self.sr = sr
 
-        # VAD + stream accumulator
-        self.listener = Listener(sample_rate=sample_rate)
-        
-        # Try to calibrate ambient noise (optional, won't fail if no mic)
+        # your Transcriber doesn't take sample_rate
+        self.transcriber = transcriber or Transcriber()
+        self.vad = vad or VADEngine(sr=sr)
+        self.debug = debug or STTDebug()
+
+        self.min_capture_sec = float(min_capture_sec)
+        self.hard_timeout_sec = float(hard_timeout_sec)
+        self.min_avg_energy = float(min_avg_energy)
+        self.frame_ms = int(frame_ms)
+
+        if self.debug.save_wavs:
+            os.makedirs(self.debug.dir, exist_ok=True)
+
+    # ---------------- Lifecycle ----------------
+
+    async def init(self) -> None:
+        await super().init()
+        print("[SpeechEngine] ✅ Ready.")
+
+    async def start(self) -> None:
+        await super().start()
+        print("[SpeechEngine] ▶ Active.")
+
+    async def stop(self) -> None:
+        await super().stop()
+        print("[SpeechEngine] ⏹ Stopped.")
+
+    # ---------------- Public API ----------------
+
+    async def listen_and_transcribe(self, language: Optional[str] = None) -> str:
+        if sd is None:
+            print("[SpeechEngine] ⚠️ sounddevice not available; mic capture disabled.")
+            return ""
+
+        if not self.active or not self.is_running():
+            print("[SpeechEngine] ⚠️ Not ready for live transcription.")
+            return ""
+
+        print("[SpeechEngine] 🎙️ Listening via mic...")
+        self.vad.reset()
+        self._stream_active = True  # <-- added
+
+        frame_len = int(self.sr * (self.frame_ms / 1000.0))
+        cap: list[np.ndarray] = []
+        t0 = time.time()
+        last_state = "idle"
+
+        def _callback(indata, frames, time_info, status):
+            x = indata.copy().astype(np.float32).reshape(-1)
+            state = self.vad.update(x)
+            cap.append(x)
+            nonlocal last_state
+            last_state = state
+
         try:
-            self.listener.calibrate_ambient(duration=1.0)
-        except:
-            if self.debug:
-                print("[ENGINE] Could not calibrate ambient noise")
+            with sd.InputStream(
+                channels=1,
+                samplerate=self.sr,
+                dtype="float32",
+                blocksize=frame_len,
+                callback=_callback,
+            ):
+                while True:
+                    await asyncio.sleep(0.01)
+                    if last_state == "silence":
+                        break
+                    if time.time() - t0 > self.hard_timeout_sec:
+                        print("[VAD] ⏰ Hard timeout after extended quiet — stopping capture.")
+                        break
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._stream_active = False  # <-- added
 
-        # Whisper transcriber
-        self.transcriber = Transcriber(model_size=stt_model)
+        if not cap:
+            self.vad.reset()
+            return ""
 
-        # Energy thresholds to filter out silence
-        self.min_energy_rms = 0.02  # Minimum RMS energy
-        self.min_energy_peak = 0.1  # Minimum peak amplitude
-        
-        # Track when we're outputting audio (to ignore echo)
-        self.is_speaking = False
+        wav = np.concatenate(cap).astype(np.float32)
+        self.vad.reset()
+        return await self.transcribe(wav, language=language)
 
-    def reset(self) -> None:
-        """Reset internal buffers & listener feed state."""
-        if hasattr(self.listener, "reset_feed"):
-            self.listener.reset_feed()
 
-    # inside class SpeechEngine
-    def reset_feed(self):
-        """Gracefully stop and reset the audio input stream."""
+    async def transcribe(self, wav_or_bytes: np.ndarray | bytes, language: Optional[str] = None) -> str:
+        """Main entry-point used by Core. No VAD logic here."""
+        if isinstance(wav_or_bytes, (bytes, bytearray)):
+            wav = np.frombuffer(wav_or_bytes, dtype=np.float32)
+        else:
+            wav = np.asarray(wav_or_bytes, dtype=np.float32)
+
+        dur = wav.size / float(self.sr)
+        if dur < self.min_capture_sec:
+            print(f"[SpeechEngine] ⏱️ captured {dur:.2f}s of audio")
+            print("[SpeechEngine] ⚠️ Too little audio, skipping transcription.")
+            return ""
+
+        avg = float(np.sqrt(np.mean(np.square(wav))) or 0.0)
+        peak = float(np.max(np.abs(wav)) or 1.0)
+        if peak > 0:
+            wav = np.clip(wav / peak, -1.0, 1.0) * 0.95
+
+        avg_after = float(np.sqrt(np.mean(np.square(wav))) or 0.0)
+        if avg_after < self.min_avg_energy:
+            print(f"[SpeechEngine] ⏱️ captured {dur:.2f}s of audio")
+            print(f"[SpeechEngine] ⚙️ avg_energy={avg_after:.5f}")
+            print(
+                "[SpeechEngine] ⚠️ Too little or too quiet audio, skipping transcription.")
+            return ""
+
+        if self.debug.save_wavs:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(
+                self.debug.dir, f"whisper_input_{ts}_{int((time.time() % 1)*1e6):06d}.wav"
+            )
+            self._save_wav(path, wav, self.sr)
+            print(f"[SpeechEngine] 🎧 saved Whisper input: {path}")
+
+        t0 = time.time()
+        text = ""
         try:
-            if hasattr(self, "stream") and self.stream:
-                self.stream.stop_stream()
-                self.stream.close()
-                self.stream = None
-            print("[SpeechEngine] 🧹 Microphone stream reset.")
+            text = self.transcriber.transcribe(wav, language or "en") or ""
         except Exception as e:
-            print(f"[SpeechEngine] ⚠️ Reset error: {e}")
-        
-    def _validate_audio_energy(self, wav: np.ndarray) -> bool:
-        """
-        Check if audio has sufficient energy to be real speech.
-        This prevents Whisper from hallucinating on silence/noise.
-        
-        Returns:
-            bool: True if audio seems like real speech
-        """
-        # Calculate RMS (average energy)
-        rms = np.sqrt(np.mean(wav**2))
-        
-        # Calculate peak amplitude
-        peak = np.max(np.abs(wav))
-        
-        # Check dynamic range (difference between loud and quiet parts)
-        percentile_90 = np.percentile(np.abs(wav), 90)
-        percentile_10 = np.percentile(np.abs(wav), 10)
-        dynamic_range = percentile_90 - percentile_10
-        
-        has_energy = rms > self.min_energy_rms
-        has_peaks = peak > self.min_energy_peak
-        has_variation = dynamic_range > 0.01
-        
-        if self.debug:
-            print(f"[ENERGY] RMS={rms:.4f} Peak={peak:.4f} Range={dynamic_range:.4f}")
-            print(f"[ENERGY] Valid: energy={has_energy} peaks={has_peaks} variation={has_variation}")
-        
-        return has_energy and has_peaks and has_variation
+            print(f"[SpeechEngine] ⚠️ STT error: {e}")
+        t_stt = time.time() - t0
 
-    def listen_and_transcribe(self) -> Tuple[str, Optional[str]]:
-        """
-        Legacy one-shot mic mode (if you still use it elsewhere).
-        Uses listener.listen_once() then transcribes.
-        Returns *localized to English for Orion*.
-        """
-        wav_bytes = self.listener.listen_once()
-        if not wav_bytes:
-            return "", None
+        print(
+            f"[SpeechEngine] ⏱️ STT time={t_stt:.2f}s (dur={dur:.2f}s, avg_energy={avg_after:.5f})")
 
-        wav = np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # Validate energy before transcribing
-        if not self._validate_audio_energy(wav):
-            if self.debug:
-                print("[ONE-SHOT STT] Audio rejected - insufficient energy")
-            return "", None
-        
-        text = self.transcriber.transcribe(wav)
-        if self.debug:
-            print(f"[ONE-SHOT STT] raw='{text}'")
+        out = text.strip()
+        if out == ".":
+            print("[SpeechEngine] ⚠️ Ignored low-confidence text: '.'")
+            return ""
 
-        eng_text, _lang_hint = text, "en"
-        return eng_text, _lang_hint
+        if out:
+            print(f"[SpeechEngine] 💬 Transcribed: {out}")
+        return out
 
-    def transcribe_feed(self, audio_chunk: bytes) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Feed PCM16 chunks (bytes) from the client microphone.
-        When the user stops speaking (VAD silence), returns:
-           (english_text_for_orion, lang_hint)
-        Otherwise returns (None, None).
-        """
-        # Ask the listener to accumulate and decide when we have a full utterance
-        utterance_bytes = self.listener.feed(audio_chunk)
-        
-        if utterance_bytes is None:
-            # Still collecting speech / no end-of-utterance yet
-            return None, None
+    # ---------------- Utils ----------------
 
-        if self.debug:
-            print(f"[STREAM STT] Got utterance: {len(utterance_bytes)} bytes")
-
-        # Convert to float32 waveform in [-1, 1] for validation and transcription
-        wav = np.frombuffer(utterance_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-
-        # CRITICAL: Validate that this is actually speech, not silence/noise
-        if not self._validate_audio_energy(wav):
-            print("[STREAM STT] Utterance rejected - insufficient energy (probably silence)")
-            return None, None
-
-        # Save audio for debugging if needed
-        if self.debug:
-            import soundfile as sf
-            sf.write(f"debug_utterance_{len(utterance_bytes)}.wav", wav, self.sample_rate)
-
-        # Transcribe with Whisper - FORCE ENGLISH to avoid language detection issues
-        text = self.transcriber.transcribe(wav, language='en')
-        
-        if self.debug:
-            print(f"[STREAM STT] raw='{text}'")
-
-        if not text or not text.strip():
-            # Nothing meaningful recognized
-            return None, None
-
-        # Filter common hallucinations that Whisper produces on silence
-        hallucinations = [
-            "thank you", "thanks for watching", "bye", "bye-bye",
-            "you", ".", "...", "thank you for watching",
-            "thanks", "subscribe", "like and subscribe"
-        ]
-        
-        text_lower = text.lower().strip()
-        if text_lower in hallucinations:
-            print(f"[STREAM STT] Filtered hallucination: '{text}'")
-            return None, None
-
-        # Normalize for Orion
-        eng_text, lang_hint = text, "en"
-
-        # Return the English command for Orion + the original language hint
-        return eng_text, lang_hint
+    @staticmethod
+    def _save_wav(path: str, wav: np.ndarray, sr: int) -> None:
+        pcm16 = np.clip(wav, -1.0, 1.0)
+        pcm16 = (pcm16 * 32767.0).astype(np.int16)
+        with contextlib.closing(wave.open(path, "wb")) as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(pcm16.tobytes())
