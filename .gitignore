@@ -15,6 +15,7 @@ env/
 venv/
 *.env
 .env*
+.venv*/
 
 # --- Logs and temp files ---
 logs/
@@ -33,8 +34,12 @@ models/*.npy
 models/cache/
 models/recordings/
 models/temp/
+models/*
 tests/
 openWakeWord/*
+outputs*/
+coloring_book/models/*
+
 
 # --- Audio files and recordings ---
 *.wav

@@ -3,6 +3,11 @@ import edge_tts
 
 VOICE = "en-US-AriaNeural"
 
+
+async def edge_tts_speak():
+    return tts_bytes
+
+
 async def _speak_bytes_async(
     text: str,
     rate: str = "+0%",

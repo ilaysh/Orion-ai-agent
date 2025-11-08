@@ -1,46 +1,93 @@
-# orion_core/tts/transcriber.py — remove hard 8s trim (single-source STT)
+# orion_core/speech/transcriber.py
+# Fast, accurate, fully-offline STT using faster-whisper
+# pip install faster-whisper soundfile librosa
+from __future__ import annotations
+import os
+import io
+import tempfile
 import numpy as np
-import torch
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
+import soundfile as sf
+import librosa
+
+try:
+    import torch
+    HAS_TORCH = True
+except Exception:
+    HAS_TORCH = False
+
+from faster_whisper import WhisperModel
 
 
 class Transcriber:
-    def __init__(self, model_size="medium"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_id = f"openai/whisper-{model_size}"
-        self.processor = WhisperProcessor.from_pretrained(self.model_id)
-        self.model = WhisperForConditionalGeneration.from_pretrained(
-            self.model_id).to(self.device)
+    """
+    Usage:
+        stt = Transcriber(model_size="medium.en")
+        text = stt.transcribe_file("/tmp/clip.wav")
+        # or:
+        text = stt.transcribe_array(audio_float32_16k, sr=16000)
+    """
+
+    def __init__(
+        self,
+        # good speed/quality. Use "small.en"/"base.en" for faster.
+        model_size: str = "medium.en",
+        # "float16" on NVIDIA; fallback to "int8_float16" on CPU
+        compute_type: str = "float16",
+        device: str | None = None,
+    ):
+        if device is None:
+            device = "cuda" if (
+                HAS_TORCH and torch.cuda.is_available()) else "cpu"
+
+        device = "cpu"
+        # if CPU, prefer int8 mixed for speed
+        if device == "cpu" and compute_type == "float16":
+            compute_type = "int8"
+
         self.sample_rate = 16000
+        self.model = WhisperModel(
+            model_size, device="cpu", compute_type=compute_type)
 
-    def transcribe(self, wav_input, language='en'):
-        if isinstance(wav_input, str):
-            import soundfile as sf
-            wav, sr = sf.read(wav_input)
-            if wav.ndim > 1:
-                wav = wav.mean(axis=1)
-            wav = wav.astype(np.float32)
-            if sr != self.sample_rate:
-                import librosa
-                wav = librosa.resample(
-                    wav, orig_sr=sr, target_sr=self.sample_rate)
-        elif isinstance(wav_input, np.ndarray):
-            wav = wav_input.astype(np.float32)
-        else:
-            raise TypeError(f"Unsupported input type: {type(wav_input)}")
+        # sensible default VAD
+        self._vad = dict(vad_filter=True, vad_parameters={
+                         "min_silence_duration_ms": 200})
 
-        if np.abs(wav).max() > 1:
-            wav = wav / np.abs(wav).max()
+    # ---------- helpers ----------
+    def _ensure_16k_mono_f32(self, wav: np.ndarray, sr: int) -> np.ndarray:
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        if sr != self.sample_rate:
+            wav = librosa.resample(wav, orig_sr=sr, target_sr=self.sample_rate)
+        wav = wav.astype(np.float32, copy=False)
+        # normalize softly if needed
+        peak = np.max(np.abs(wav)) if wav.size else 0.0
+        if peak > 1.0:
+            wav /= peak
+        return wav
 
-        inputs = self.processor(
-            wav, sampling_rate=self.sample_rate, return_tensors="pt").to(self.device)
-        forced_decoder_ids = self.processor.get_decoder_prompt_ids(
-            language=language, task="transcribe")
+    # ---------- main APIs ----------
+    def transcribe_file(self, path: str, language: str = "en") -> str:
+        segments, _ = self.model.transcribe(
+            path, language=language, **self._vad)
+        return " ".join(s.text.strip() for s in segments if s.text).strip()
 
-        with torch.no_grad():
-            predicted_ids = self.model.generate(
-                **inputs, forced_decoder_ids=forced_decoder_ids)
+    def transcribe_array(self, wav: np.ndarray, sr: int, language: str = "en") -> str:
+        wav = self._ensure_16k_mono_f32(wav, sr)
+        # faster-whisper can take a float32 array at 16k directly
+        segments, _ = self.model.transcribe(
+            wav, language=language, **self._vad)
+        return " ".join(s.text.strip() for s in segments if s.text).strip()
 
-        text = self.processor.batch_decode(
-            predicted_ids, skip_special_tokens=True)[0]
-        return text.strip()
+    # convenience for raw bytes → temp wav (if you already save bytes)
+    def transcribe_bytes(self, wav_bytes: bytes, language: str = "en") -> str:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(wav_bytes)
+            tmp.flush()
+            path = tmp.name
+        try:
+            return self.transcribe_file(path, language=language)
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
