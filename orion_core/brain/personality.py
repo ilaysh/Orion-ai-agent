@@ -1,16 +1,19 @@
 # orion_core/brain/personality.py
-import os
 from pathlib import Path
+from orion_core.brain.project_mapper import ProjectMapper
 
 class Personality:
     """
     The Soul of Orion.
-    Manages the System Prompt and injects Context.
+    Manages the System Prompt by combining Identity, Protocols, and the LIVE MAP.
     """
     def __init__(self):
         self.root_dir = Path(__file__).parents[2]
         self.prompts_dir = self.root_dir / "orion_core" / "prompts"
         self.docs_dir = self.root_dir / "docs"
+        
+        # Link to the authoritative source of truth
+        self.mapper = ProjectMapper(root_dir=str(self.root_dir))
         
         self.soul_path = self.docs_dir / "orion_presonality.md"
         self.kernel_path = self.prompts_dir / "kernel_system.txt"
@@ -20,7 +23,6 @@ class Personality:
         self.load_cache()
 
     def load_cache(self):
-        """Loads static text files (Identity/Rules)."""
         if self.soul_path.exists():
             self.soul_text = self.soul_path.read_text("utf-8")
         else:
@@ -31,43 +33,12 @@ class Personality:
         else:
             self.kernel_text = "[CORE TOOLS]\n1. fs\n2. cmd"
 
-    def _get_flash_map(self) -> str:
-        """
-        ⚡ FLASH SCAN: Lists filenames only.
-        Takes ~0.002s. Runs on every request so Orion is always 100% sync.
-        """
-        tree = []
-        try:
-            # Only scan the 'projects' folder (limit depth for speed)
-            for root, dirs, files in os.walk(self.root_dir):
-                # 1. SKIP HEAVY FOLDERS (Speed Optimization)
-                if any(x in root for x in [".venv", ".git", "__pycache__", "models", "node_modules", "ui/static"]):
-                    continue
-                
-                rel_root = os.path.relpath(root, self.root_dir)
-                if rel_root == ".": rel_root = ""
-                
-                # 2. FILTER RELEVANT FILES
-                valid_files = [f for f in files if f.endswith(".py") or f.endswith(".md") or f.endswith(".txt")]
-                
-                if valid_files:
-                    path_prefix = f"{rel_root}/" if rel_root else ""
-                    # Add to tree (e.g. "runners/launcher.py")
-                    for f in valid_files:
-                        tree.append(f"- {path_prefix}{f}")
-                        
-        except Exception:
-            return "(Map unavailable)"
-            
-        # 3. SAFETY LIMIT (Prevent Context Overflow)
-        return "\n".join(tree[:80])
-
     def get_system_prompt(self, tools_list: list) -> str:
         """
         Builds the Master Context with Real-Time Awareness.
         """
-        # This runs instantly (~2ms)
-        project_map = self._get_flash_map()
+        # Fetch the optimized summary from ProjectMapper
+        project_map = self.mapper.get_live_map_summary()
         
         prompt = (
             f"{self.soul_text}\n\n"
