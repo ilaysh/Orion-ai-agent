@@ -1,87 +1,129 @@
 # orion_core/tts/jarvis_tts.py
-import asyncio
 import base64
 import io
 import os
-import subprocess
-import tempfile
+import re
 import numpy as np
-from piper.voice import PiperVoice
+from typing import Optional
+from kokoro_onnx import Kokoro
+from pydub import AudioSegment, effects
 
-MODEL_PATH = "models/voice/jarvis.onnx"
-_voice = None
-
-
+# --- CONFIGURATION ---
 MODEL_DIR = "models/voice"
-MODEL_NAME = "jarvis"
-MODEL_ONNX = os.path.join(MODEL_DIR, f"{MODEL_NAME}.onnx")
-MODEL_JSON = os.path.join(MODEL_DIR, f"{MODEL_NAME}.onnx.json")
-DEFAULT_RATE = "0.9"   # 1.0 = normal, <1.0 slower, >1.0 faster
+MODEL_NAME = "kokoro-v1.0.onnx"
+VOICES_NAME = "voices-v1.0.bin"
 
-_voice = None
+MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
+VOICES_PATH = os.path.join(MODEL_DIR, VOICES_NAME)
 
+# Voice Settings
+VOICE_NAME = "bm_george"  # The Butler
+SPEED = 1.1 
+ENABLE_PUNCH = True
 
-def _get_voice():
+_voice: Optional[Kokoro] = None
+
+def preload_voice() -> Kokoro:
     global _voice
-    if _voice is None:
-        if not os.path.exists(MODEL_ONNX):
-            raise FileNotFoundError(f"Missing {MODEL_ONNX}")
-        if not os.path.exists(MODEL_JSON):
-            raise FileNotFoundError(
-                f"Missing {MODEL_JSON} — required for Piper!")
+    if _voice is not None: return _voice
 
-        print(f"[PiperTTS] Loading voice model: {MODEL_ONNX}")
-        print(f"[PiperTTS] Config: {MODEL_JSON}")
-        _voice = PiperVoice.load(MODEL_ONNX, config_path=MODEL_JSON)
-        print(f"[PiperTTS] Voice ready. "
-              f"Sample rate: {_voice.config.sample_rate} Hz | "
-              f"Speakers: {getattr(_voice.config, 'num_speakers', 1)}")
+    if not os.path.exists(MODEL_PATH):
+        print(f"[JarvisTTS] ❌ Model missing: {MODEL_PATH}")
+        return None
+
+    print(f"[JarvisTTS] Loading Kokoro Voice: {MODEL_PATH}")
+    try:
+        _voice = Kokoro(MODEL_PATH, VOICES_PATH)
+        print("[JarvisTTS] ✅ Voice System Online.")
+    except Exception as e:
+        print(f"[JarvisTTS] ❌ Load Failed: {e}")
+        return None
     return _voice
 
+def clean_for_speech(text: str) -> str:
+    """
+    Sanitizes LLM output to prevent TTS crashes.
+    1. Removes Markdown (*, #, _, `).
+    2. Expands common symbols.
+    3. Adds a period at the end (Safety Pad).
+    """
+    if not text: return ""
+    
+    # Remove Markdown bold/italic/code
+    text = re.sub(r'[*_`#]', '', text)
+    
+    # Remove complex brackets [Source: 1] -> ""
+    text = re.sub(r'\[.*?\]', '', text)
+    
+    # Ensure it ends with punctuation (Helps alignment model)
+    text = text.strip()
+    if not text.endswith(('.', '!', '?')):
+        text += "."
+        
+    return text
 
-def _resample_wav(in_bytes: bytes, factor: float) -> bytes:
-    import io
-    import soundfile as sf
-    import numpy as np
-    data, sr = sf.read(io.BytesIO(in_bytes), dtype="int16")
-    new_sr = int(sr * factor)
-    buf = io.BytesIO()
-    sf.write(buf, data, new_sr, format="WAV")
-    return buf.getvalue()
+def apply_jarvis_polish(audio_data: np.ndarray, sample_rate: int) -> AudioSegment:
+    # Convert float32 -> int16
+    audio_int16 = (audio_data * 32767).astype(np.int16)
+    audio_segment = AudioSegment(
+        audio_int16.tobytes(),
+        frame_rate=sample_rate,
+        sample_width=2,
+        channels=1
+    )
+    if ENABLE_PUNCH:
+        audio_segment = effects.normalize(audio_segment, headroom=0.1)
+    return audio_segment
 
+async def speak(text: str) -> Optional[str]:
+    """
+    Generates audio and returns Base64 string.
+    Includes Crash Protection & Fallback.
+    """
+    # print(f"[JarvisTTS] 🗣️ speak() called with: {text[:50]}...")
+    if not text or not text.strip(): 
+        print("[JarvisTTS] ⚠️ Empty text, skipping")
+        return None
 
-async def speak(text: str, rate: str = DEFAULT_RATE) -> str:
-    """Offline Jarvis voice using Piper CLI (async, adjustable speed)."""
+    # 1. Sanitize (The Fix for 'words_mismatch')
+    safe_text = clean_for_speech(text)
+    print(f"[JarvisTTS] ✅ Sanitized: {safe_text}")
+    
     try:
-        # create temp wav file
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            wav_path = tmp.name
+        if not _voice:
+            print("[JarvisTTS] ⚠️ Voice not loaded. Attempting load...")
+            preload_voice()
+            if not _voice: 
+                print("[JarvisTTS] ❌ Failed to load voice")
+                return None
 
-        # run Piper asynchronously
-        cmd = [
-            "piper",
-            "--model", MODEL_PATH,
-            "--output_file", wav_path,
-            "--length_scale", rate,  # tempo control (1.0=normal, 0.9=slower)
-            "--text", text,
-        ]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+        # 2. Generate
+        print(f"[JarvisTTS] 🎙️ Generating audio...")
+        samples, sample_rate = _voice.create(
+            safe_text,
+            voice=VOICE_NAME,
+            speed=SPEED,
+            lang="en-gb"
         )
-        await proc.communicate()
+        print(f"[JarvisTTS] ✅ Generated {len(samples)} samples at {sample_rate}Hz")
 
-        # read audio
-        if os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
-            with open(wav_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-            os.remove(wav_path)
-            return b64
-        else:
-            raise RuntimeError("Piper produced no audio output.")
+        # 3. Polish
+        final_segment = apply_jarvis_polish(samples, sample_rate)
+
+        # 4. Export
+        buf = io.BytesIO()
+        final_segment.export(buf, format="wav")
+        audio_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        print(f"[JarvisTTS] ✅ Exported {len(audio_b64)} bytes as base64")
+        return audio_b64
 
     except Exception as e:
-        print(f"[PiperTTS] ⚠️ CLI synthesis failed: {e}")
+        print(f"[JarvisTTS] 💥 Generation Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # FALLBACK: If Kokoro crashes, use system voice so you aren't left silent
+        # This ensures you always get an answer.
+        import subprocess, shutil
+        if shutil.which("spd-say"):
+            subprocess.run(["spd-say", "-w", safe_text])
         return None

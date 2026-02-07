@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Orion Telemetry Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0b0c10;
+            color: #e5e5e5;
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            padding: 16px 24px;
+            border-bottom: 1px solid #222;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #111;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 20px;
+            color: #4cc9f0;
+        }
+
+        header span {
+            font-size: 12px;
+            opacity: 0.7;
+        }
+
+        main {
+            padding: 16px 24px 40px;
+            display: grid;
+            grid-template-columns: 2fr 2fr;
+            grid-template-rows: auto auto;
+            grid-gap: 16px;
+        }
+
+        .card {
+            background: #15161b;
+            border-radius: 10px;
+            padding: 12px 16px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+        }
+
+        .card h2 {
+            margin: 0 0 8px;
+            font-size: 16px;
+            color: #c4e1ff;
+        }
+
+        #raw {
+            max-height: 260px;
+            overflow: auto;
+            font-family: monospace;
+            font-size: 11px;
+            background: #050608;
+            border-radius: 8px;
+            padding: 8px;
+            white-space: pre-wrap;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 4px 6px;
+            border-bottom: 1px solid #222;
+        }
+
+        th {
+            font-weight: 600;
+            color: #9ad0ff;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            background: #1f2933;
+            color: #9ad0ff;
+        }
+
+        footer {
+            padding: 4px 16px 10px;
+            font-size: 11px;
+            text-align: right;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div>
+            <h1>Orion Telemetry</h1>
+            <span>Local APM-like monitoring for Core/Brain/LLM</span>
+        </div>
+        <div>
+            <span id="status" class="badge">Connecting…</span>
+        </div>
+    </header>
+
+    <main>
+        <section class="card">
+            <h2>Pipeline Total Time (last runs)</h2>
+            <canvas id="pipelineChart" height="140"></canvas>
+        </section>
+
+        <section class="card">
+            <h2>Slowest Functions (avg over recent)</h2>
+            <canvas id="metricsChart" height="140"></canvas>
+        </section>
+
+        <section class="card">
+            <h2>Metrics Table (recent)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Avg (s)</th>
+                        <th>Min</th>
+                        <th>Max</th>
+                        <th>Count</th>
+                    </tr>
+                </thead>
+                <tbody id="metricsTableBody"></tbody>
+            </table>
+        </section>
+
+        <section class="card">
+            <h2>Raw Telemetry (tail)</h2>
+            <div id="raw">Loading…</div>
+        </section>
+    </main>
+
+    <footer>
+        Auto-refresh every 3s • Orion Telemetry
+    </footer>
+
+    <script>
+        let pipelineChart, metricsChart;
+
+        async function fetchJSON(url) {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return await res.json();
+        }
+
+        async function refreshTelemetry() {
+            const statusEl = document.getElementById("status");
+            try {
+                statusEl.textContent = "Updating…";
+                statusEl.style.background = "#2d3748";
+
+                const [pipeline, stats, raw] = await Promise.all([
+                    fetchJSON("/api/telemetry/pipeline"),
+                    fetchJSON("/api/telemetry/stats"),
+                    fetchJSON("/api/telemetry/latest"),
+                ]);
+
+                updatePipelineChart(pipeline);
+                updateMetricsChart(stats);
+                updateMetricsTable(stats);
+                updateRaw(raw);
+
+                statusEl.textContent = "OK";
+                statusEl.style.background = "#065f46";
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = "Error";
+                statusEl.style.background = "#7f1d1d";
+            }
+        }
+
+        function updatePipelineChart(data) {
+            const labels = data.map((d, idx) => idx + 1);
+            const values = data.map(d => d.total_pipeline);
+
+            if (!pipelineChart) {
+                const ctx = document.getElementById("pipelineChart").getContext("2d");
+                pipelineChart = new Chart(ctx, {
+                    type: "line",
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: "Total pipeline time (s)",
+                            data: values,
+                            tension: 0.3,
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { ticks: { color: "#9ca3af" }, grid: { color: "#1f2937" } },
+                            y: { ticks: { color: "#9ca3af" }, grid: { color: "#1f2937" } }
+                        }
+                    }
+                });
+            } else {
+                pipelineChart.data.labels = labels;
+                pipelineChart.data.datasets[0].data = values;
+                pipelineChart.update();
+            }
+        }
+
+        function updateMetricsChart(stats) {
+            const top = stats.slice(0, 8); // top 8
+            const labels = top.map(s => s.name);
+            const values = top.map(s => s.avg);
+
+            if (!metricsChart) {
+                const ctx = document.getElementById("metricsChart").getContext("2d");
+                metricsChart = new Chart(ctx, {
+                    type: "bar",
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: "Avg time (s)",
+                            data: values,
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        plugins: { legend: { display: false } },
+                        indexAxis: "y",
+                        scales: {
+                            x: { ticks: { color: "#9ca3af" }, grid: { color: "#1f2937" } },
+                            y: { ticks: { color: "#9ca3af" }, grid: { color: "#1f2937" } }
+                        }
+                    }
+                });
+            } else {
+                metricsChart.data.labels = labels;
+                metricsChart.data.datasets[0].data = values;
+                metricsChart.update();
+            }
+        }
+
+        function updateMetricsTable(stats) {
+            const tbody = document.getElementById("metricsTableBody");
+            tbody.innerHTML = "";
+            stats.slice(0, 20).forEach(s => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+      <td>${s.name}</td>
+      <td>${s.avg.toFixed(3)}</td>
+      <td>${s.min.toFixed(3)}</td>
+      <td>${s.max.toFixed(3)}</td>
+      <td>${s.count}</td>
+    `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateRaw(raw) {
+            const el = document.getElementById("raw");
+            if (!raw.length) {
+                el.textContent = "No telemetry yet.";
+                return;
+            }
+            const lines = raw.slice(-40).map(r =>
+                `[${new Date(r.timestamp * 1000).toLocaleTimeString()}] ${r.metric || r.name} = ${r.time.toFixed(3)}s`
+            );
+            el.textContent = lines.join("\n");
+        }
+
+        setInterval(refreshTelemetry, 3000);
+        refreshTelemetry();
+    </script>
+</body>
+
+</html>

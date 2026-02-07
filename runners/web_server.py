@@ -1,33 +1,31 @@
-
-import asyncio
-from fastapi import FastAPI
-from fastapi.concurrency import asynccontextmanager
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+# runners/webview.py
+import webview, threading, time, requests
 import uvicorn
+import sys
+import os
 
-from ui.router import router as web_router, orion
+# Add project root to sys.path to find modules
+sys.path.append(os.getcwd())
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("[WebServer] 🔄 lifespan start")
-    asyncio.create_task(orion._on_init())   # run init when loop is alive
-    yield
-    print("[WebServer] 🔻 lifespan stop")
-    await orion.shutdown()
+# CRITICAL FIX: Import from ui.router, NOT runners.web_server
+from ui.router import app 
 
-app = FastAPI(title="Orion v2", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
-app.mount("/static", StaticFiles(directory="ui/static"), name="static")
-app.include_router(web_router)
+def run_server():
+    # host="0.0.0.0" allows access from network if needed, but 127.0.0.1 is safer for local
+    uvicorn.run(app, host="127.0.0.1", port=8080,reload=True)
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "runners.web_server:app",
-        host="0.0.0.0",
-        port=8080,
-        reload=True
-    )
+    t = threading.Thread(target=run_server, daemon=True)
+    t.start()
+
+    # Wait for server
+    for _ in range(20):
+        try:
+            requests.get("http://127.0.0.1:8080/")
+            break
+        except:
+            time.sleep(0.5)
+
+    # Open Orion UI
+    webview.create_window("Orion v2 Assistant", "http://127.0.0.1:8080/")
+    webview.start(gui="qt")

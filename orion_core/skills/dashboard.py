@@ -25,12 +25,14 @@ def _open_dashboard() -> str:
 
     if proc_running:
         if shutil.which("wmctrl"):
-            subprocess.run(["wmctrl", "-x", "-a", "orion-dashboard"], check=False)
-            return "Orion Dashboard is already open — bringing it to front."
+            subprocess.run(
+                ["wmctrl", "-x", "-a", "orion-dashboard"], check=False)
+            return {"skill": "dashboard.open", "result": {"status": "already_open"}}
+
         return "Orion Dashboard is already open."
     else:
         _launch_dashboard()
-        return "Opening Orion Dashboard..."
+        return {"skill": "dashboard.open", "result": {"status": "opening"}}
 
 
 def _restart_dashboard() -> str:
@@ -61,9 +63,10 @@ def _close_dashboard() -> str:
             except Exception:
                 pass
     if closed:
-        return "Closed Orion Dashboard."
+        return {"skill": "dashboard.close", "result": {"status": "closed"}}
+
     else:
-        return "Dashboard is not running."
+        return {"skill": "dashboard.close", "result": {"status": "inactive"}}
 
 
 def _launch_dashboard():

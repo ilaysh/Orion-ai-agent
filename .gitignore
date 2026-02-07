@@ -63,3 +63,9 @@ npm-debug.log*
 hey_orion.onnx
 hey_orion.pth
 models/he_mt.py
+system/telemetry/telemetry.jsonl
+orion_core/prompts/orion_personality_lite.txt
+orion_core/prompts/thinker_system.txt
+orion_core/prompts/coder_system.txt
+orion_core/prompts/architect_system.txt
+data/rag/chroma.sqlite3

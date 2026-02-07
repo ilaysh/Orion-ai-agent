@@ -161,11 +161,11 @@ class WakeWordDetector:
         gate = max(self._noise_floor * 1.5, 0.003)  # conservative minimum gate
 
         # helpful input stats (always log for now)
-        print(
-            f"[Wake] In: len={wav.size}, min={np.min(wav):+0.4f}, max={np.max(wav):+0.4f}, mean={np.mean(wav):+0.4f}")
+        # print(
+        #     f"[Wake] In: len={wav.size}, min={np.min(wav):+0.4f}, max={np.max(wav):+0.4f}, mean={np.mean(wav):+0.4f}")
         if raw_energy < gate:
-            print(
-                f"[Wake] Energy {raw_energy:.4f} below gate {gate:.4f}, skipping eval.")
+           # print(
+          #      f"[Wake] Energy {raw_energy:.4f} below gate {gate:.4f}, skipping eval.")
             # optional debug save of the skipped window
             if getattr(self, "_debug_save_all", False):
                 try:

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import edge_tts
 
 VOICE = "en-US-AriaNeural"
@@ -61,3 +62,33 @@ def tts_bytes_sync(
         # but here, since we're in same loop, just gather:
         future = asyncio.ensure_future(task)
         return loop.run_until_complete(future)
+
+
+async def speak(text: str, rate: str = "+0%", pitch: str = "+0Hz", volume: str = "+0%") -> str:
+    """
+    Public entry for Orion TTS via Edge.
+    Cleans text and returns base64 WAV for playback.
+    """
+    if not text:
+        return None
+
+    t = text.strip()
+    if t.lower().startswith("text "):
+        t = t[5:].strip()
+    if t.lower().startswith("orion:"):
+        t = t.split(":", 1)[-1].strip()
+
+    communicate = edge_tts.Communicate(
+        t,
+        voice=VOICE,
+        rate=rate,
+        pitch=pitch,
+        volume=volume,
+    )
+
+    audio = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio += chunk["data"]
+
+    return base64.b64encode(audio).decode("utf-8")

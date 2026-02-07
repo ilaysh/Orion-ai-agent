@@ -1,4 +1,13 @@
 let socket, audioCtx, pcmNode, isStreaming = false;
+let audioEnabled = false;
+
+// Initialize audio context on first user interaction
+function enableAudio() {
+    if (!audioEnabled) {
+        audioEnabled = true;
+        console.log("[Audio] ✅ Audio enabled by user interaction");
+    }
+}
 
 function connect() {
     const orb = document.getElementById("orb");
@@ -19,6 +28,18 @@ function connect() {
         if (msg.type === "state") {
             orb.className = "orb " + msg.state;
             document.getElementById("status").textContent = msg.state;
+        }
+        if (msg.type === "speak") {
+            console.log("[WS] 🔊 Received TTS audio");
+            if (msg.audio) {
+                if (!audioEnabled) {
+                    console.warn("[Audio] ⚠️ Autoplay blocked. Click anywhere to enable audio.");
+                    // Show user prompt to enable audio
+                    addLog("🔇 Click anywhere to enable audio playback");
+                } else {
+                    playAudio(msg.audio);
+                }
+            }
         }
         if (msg.type === "orion_reply") {
             if (msg.text) addLog("Orion: " + msg.text);
@@ -42,12 +63,20 @@ function addLog(t) {
 }
 
 async function playAudio(b64) {
-    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-    const blob = new Blob([bytes], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    audio.onended = () => socket.send(JSON.stringify({ type: "playback_finished" }));
-    await audio.play();
+    console.log("[Audio] ▶️ Playing response audio");
+    try {
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => socket.send(JSON.stringify({ type: "playback_finished" }));
+        await audio.play();
+    } catch (err) {
+        console.error("[Audio] ❌ Playback failed:", err);
+        if (err.name === "NotAllowedError") {
+            addLog("🔇 Audio blocked - click anywhere to enable");
+        }
+    }
 }
 
 function sendMessage() {
@@ -88,6 +117,10 @@ function stopAudioStream() {
 
 window.addEventListener("load", () => {
     connect();
+
+    // Enable audio on any click (satisfies browser autoplay policy)
+    document.addEventListener("click", enableAudio, { once: true });
+
     document.getElementById("powerBtn").addEventListener("click", () => {
         isStreaming ? stopAudioStream() : startAudioStream();
     });

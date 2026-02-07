@@ -1,0 +1,5 @@
+[
+  "Always verify a file exists before reading it.",
+  "If a user intent is unclear, ask for clarification.",
+  "Do not simulate heavy processes; execute them."
+]

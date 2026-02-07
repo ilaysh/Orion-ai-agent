@@ -1,77 +1,129 @@
-# tries Ollama first; falls back to tiny transformers model
-import json
-import requests
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+# orion_core/brain/llm_local.py
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "llama3.1:8b-instruct"  # change if needed
+"""
+Legacy LLM Compatibility Layer
+------------------------------
 
-_tokenizer = None
-_model = None
+This file exists so older Orion code can still call:
+
+    generate_mistral()
+    preload_default_models()
+    unload_model()
+    unload_all()
+    select_model()
+
+Internally, EVERYTHING routes to the new ChatEngine,
+which runs Qwen2.5-14B as Orion's reasoning model.
+
+This prevents breaking older modules like:
+- DecisionManager
+- Skills
+- Planner prototypes
+"""
+
+import asyncio
+from orion_core.brain.llm.chat_engine import get_chat_engine
 
 
-def _fallback():
-    global _tokenizer, _model
-    if _model:
-        return _tokenizer, _model
-    name = "microsoft/phi-3-mini-4k-instruct"
-    _tokenizer = AutoTokenizer.from_pretrained(name)
-    _model = AutoModelForCausalLM.from_pretrained(
-        name, torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32, device_map="auto"
-    )
-    return _tokenizer, _model
+# ---------------------------------------------------------
+# MODEL SELECTION (legacy API)
+# ---------------------------------------------------------
+DEFAULT_CORTEX = "Qwen/Qwen2.5-Coder-14B-Instruct"
+DEFAULT_CODER = DEFAULT_CORTEX
 
 
-def generate(prompt: str, model_path=None, temperature=0.7, max_new_tokens=512):
+def select_model(kind: str | None = None) -> str:
+    """Legacy: always return chat model."""
+    return DEFAULT_CORTEX
+
+
+# ---------------------------------------------------------
+# MODEL PRELOAD (legacy API)
+# ---------------------------------------------------------
+def preload_default_models():
     """
-    Generate text response from a local LLM (Ollama or HF model).
-    Includes safety for truncated decoding.
+    Load the ChatEngine model immediately on startup.
+    Non-async wrappers are provided for compatibility.
     """
-    import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-
-    model_path = model_path or "microsoft/Phi-3-mini-4k-instruct"
-    print(f"[LLM] 🚀 Generating with {model_path} (temperature={temperature})")
-
+    engine = get_chat_engine()
     try:
-        tok = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto"
-        )
-        if not model.device.type.startswith("cuda"):
-            model = model.to("cuda")
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(engine.load())
+        else:
+            loop.run_until_complete(engine.load())
+    except RuntimeError:
+        # If no loop exists (e.g., startup code), create one temporarily
+        tmp_loop = asyncio.new_event_loop()
+        tmp_loop.run_until_complete(engine.load())
+        tmp_loop.close()
 
-        pipe = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tok
-        )
+    print("[LLM Local] ✔ ChatEngine preloaded.")
 
-        # 🧠 Run generation
-        out = pipe(
-            prompt,
+
+# ---------------------------------------------------------
+# UNLOAD (legacy API)
+# ---------------------------------------------------------
+def unload_model(name: str):
+    """
+    Legacy function — unload chat engine.
+    """
+    engine = get_chat_engine()
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(engine.unload())
+        else:
+            loop.run_until_complete(engine.unload())
+    except RuntimeError:
+        tmp = asyncio.new_event_loop()
+        tmp.run_until_complete(engine.unload())
+        tmp.close()
+
+
+def unload_all():
+    unload_model(DEFAULT_CORTEX)
+
+
+# ---------------------------------------------------------
+# PRIMARY LEGACY GENERATE (maps to ChatEngine)
+# ---------------------------------------------------------
+def generate_mistral(
+    prompt: str,
+    system_prompt: str = "",
+    context: str = "",
+    max_new_tokens: int = 200,
+    temperature: float = 0.4,
+):
+    """
+    Legacy wrapper.
+
+    All old calls like:
+
+        generate_mistral("Hello", system_prompt="...", context="...")
+
+    now funnel into ChatEngine.
+    """
+    engine = get_chat_engine()
+
+    async def run():
+        return await engine.generate_chat(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            context=context,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
-            do_sample=True,
-            top_p=0.95
         )
 
-        text = out[0]["generated_text"]
-        # 🔒 Safe decoding & marker handling
-        if "<|assistant|>" in text:
-            text = text.split("<|assistant|>", 1)[-1]
-        elif "Assistant:" in text:
-            text = text.split("Assistant:", 1)[-1]
-        elif "Response:" in text:
-            text = text.split("Response:", 1)[-1]
-
-        text = text.strip()
-        print(f"[LLM] ✅ Generated {len(text)} chars")
-        return text
-
-    except Exception as e:
-        print(f"[LLM] ⚠️ Generation failed: {e}")
-        return "I'm sorry, I encountered an error while generating the response."
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            return asyncio.run_coroutine_threadsafe(run(), loop).result()
+        else:
+            return loop.run_until_complete(run())
+    except RuntimeError:
+        # No loop — create temporary
+        tmp = asyncio.new_event_loop()
+        out = tmp.run_until_complete(run())
+        tmp.close()
+        return out

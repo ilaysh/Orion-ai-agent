@@ -6,34 +6,68 @@ import os
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import asynccontextmanager
 from orion_core.core import OrionCore
 
-router = APIRouter()
-orion = OrionCore()
+from system.telemetry import queries
+from system.telemetry.aggregator import telemetry_start
+from system.telemetry.telemetry import telemetry_summary
+
+# 1. SETUP
+TELEMETRY_DIR = Path("orion_core/system/telemetry")
+TELEMETRY_LOG = TELEMETRY_DIR / "telemetry.log"
+TELEMETRY_JSONL = TELEMETRY_DIR / "telemetry.jsonl"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+# 2. INSTANCE
+router = APIRouter()
+orion = OrionCore()
 
+# 3. LIFESPAN
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[Router] 🔄 Starting Orion via lifespan hook...")
-    asyncio.create_task(orion._on_init())
+    await orion.start(run_init=True)
     yield
     print("[Router] 🔻 Orion shutting down...")
     await orion.shutdown()
 
+# 4. APP DEFINITION
 app = FastAPI(lifespan=lifespan)
-app.include_router(router)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-
+# 5. ROUTES (Must be defined BEFORE include_router)
 @router.get("/")
 async def root():
-    return FileResponse(STATIC_DIR / "index.html")
+    # Verify file exists to avoid 500 error
+    index_path = STATIC_DIR / "index.html"
+    if not index_path.exists():
+        return HTMLResponse("<h1>Error: index.html not found in ui/static</h1>")
+    return FileResponse(index_path)
 
+@router.get("/telemetry")
+async def telemetry_dashboard():
+    # Fallback if dashboard.html missing
+    dash_path = Path("orion_core/system/telemetry/dashboard.html")
+    if not dash_path.exists():
+         return HTMLResponse("<h1>Telemetry Dashboard Not Found</h1>")
+    html = dash_path.read_text(encoding='utf-8')
+    return HTMLResponse(html)
 
+@router.get("/api/telemetry/pipeline")
+async def get_pipeline():
+    return JSONResponse(queries.pipeline_timeline())
+
+@router.get("/api/telemetry/latest")
+async def get_raw():
+    return JSONResponse(queries.latest_raw())
+
+@router.get("/api/telemetry/stats")
+async def get_stats():
+    return JSONResponse(queries.stats())
+
+# WebSocket Logic
 async def _pump_events(ws: WebSocket):
     try:
         while True:
@@ -44,7 +78,6 @@ async def _pump_events(ws: WebSocket):
                 await ws.send_json({"type": "log", "text": str(evt)})
     except Exception:
         return
-
 
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
@@ -57,31 +90,19 @@ async def websocket_endpoint(ws: WebSocket):
             t = msg.get("type")
 
             if t == "user_text":
+                telemetry_start()
                 await orion.handle_user_text(msg.get("text", ""))
+                print(telemetry_summary())
 
             elif t == "user_audio":
+                telemetry_start()
                 audio_chunk = base64.b64decode(msg["audio"])
+                print(telemetry_summary())
                 await orion.handle_user_audio(audio_chunk)
 
             elif t == "playback_finished":
                 orion.playback_finished()
                 await ws.send_json({"type": "state", "state": "idle"})
-
-            elif t == "diagnostic_audio":
-                try:
-                    raw = base64.b64decode(msg["audio"])
-                    sr = int(msg.get("sampleRate", 16000))
-                    os.makedirs("logs", exist_ok=True)
-                    fname = f"logs/diag_{datetime.now():%Y%m%d_%H%M%S}.wav"
-                    import wave
-                    with wave.open(fname, "wb") as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(sr)
-                        wf.writeframes(raw)
-                    await ws.send_json({"type": "diagnostic_saved", "file": fname})
-                except Exception as e:
-                    await ws.send_json({"type": "diagnostic_error", "error": str(e)})
 
     except WebSocketDisconnect:
         print("[Router] ⚠️ WebSocket disconnected")
@@ -89,3 +110,7 @@ async def websocket_endpoint(ws: WebSocket):
         pump_task.cancel()
         with contextlib.suppress(Exception):
             await pump_task
+
+# 6. MOUNTS & INCLUDES (FINAL STEP)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.include_router(router)  # <--- CRITICAL: MUST BE LAST
