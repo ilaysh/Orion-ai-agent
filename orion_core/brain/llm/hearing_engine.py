@@ -34,6 +34,23 @@ class HearingEngine:
 
     def transcribe(self, audio_data, beam_size=5):
         if not self.model: return ""
-        # Run in thread to prevent blocking the async loop
-        segments, _ = self.model.transcribe(audio_data, beam_size=beam_size)
+        # Beam size 5 improves accuracy for complex sentences
+        segments, _ = self.model.transcribe(audio_data, beam_size=5, language=language)
         return " ".join([s.text for s in segments]).strip()
+
+    def translate_to_english(self, audio_data: np.ndarray, source_lang: str = None) -> str:
+        """Directly translates foreign audio (JP/FR) to English."""
+        if not self.model: return ""
+        
+        # The 'translate' task is a native Whisper feature
+        segments, info = self.model.transcribe(
+            audio_data, 
+            beam_size=5, 
+            task="translate", 
+            language=source_lang
+        )
+        
+        return " ".join([s.text for s in segments]).strip()
+
+_instance = HearingEngine()
+def get_hearing_engine() -> HearingEngine: return _instance

@@ -69,3 +69,14 @@ orion_core/prompts/thinker_system.txt
 orion_core/prompts/coder_system.txt
 orion_core/prompts/architect_system.txt
 data/rag/chroma.sqlite3
+data/people_tree.json
+data/schedule.json
+data/world_facts.json
+data/people_tree.json
+data/people_tree.json
+=1.18.1
+orion_core/memory/checkpoints.sqlite-wal
+orion_core/memory/checkpoints.sqlite-shm
+.gitignore
+test_telemetry.py
+orion_core/memory/checkpoints.sqlite

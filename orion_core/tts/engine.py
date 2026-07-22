@@ -122,6 +122,8 @@ class SpeechEngine(BaseComponent):
         )
 
     async def speak(self, text: str):
+        """Returns dict {samples, sample_rate, b64} or None. Core plays the
+        samples via sounddevice; b64 goes to display clients."""
         return await jarvis_speak(text)
     
     async def stop(self):

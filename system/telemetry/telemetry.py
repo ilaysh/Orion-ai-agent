@@ -8,29 +8,32 @@ from .aggregator import telemetry_start, telemetry_add, telemetry_finalize
 from .storage import write_text, write_jsonl
 
 
+import inspect
+
 def timed(tag=None):
     def decorator(func):
-        async def async_wrapper(*args, **kwargs):
-            if not allow_sample():
-                return await func(*args, **kwargs)
-            t0 = time.perf_counter()
-            result = await func(*args, **kwargs)
-            t1 = time.perf_counter()
-            telemetry_add(tag or func.__name__, t1 - t0)
-            return result
-
-        def sync_wrapper(*args, **kwargs):
-            if not allow_sample():
-                return func(*args, **kwargs)
-            t0 = time.perf_counter()
-            result = func(*args, **kwargs)
-            t1 = time.perf_counter()
-            telemetry_add(tag or func.__name__, t1 - t0)
-            return result
-
-        if func.__code__.co_flags & 0x80:
-            return wraps(func)(async_wrapper)
-        return wraps(func)(sync_wrapper)
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                if not allow_sample():
+                    return await func(*args, **kwargs)
+                t0 = time.perf_counter()
+                result = await func(*args, **kwargs)
+                t1 = time.perf_counter()
+                telemetry_add(tag or func.__name__, t1 - t0)
+                return result
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                if not allow_sample():
+                    return func(*args, **kwargs)
+                t0 = time.perf_counter()
+                result = func(*args, **kwargs)
+                t1 = time.perf_counter()
+                telemetry_add(tag or func.__name__, t1 - t0)
+                return result
+            return sync_wrapper
     return decorator
 
 

@@ -2,10 +2,43 @@ let socket, audioCtx, pcmNode, isStreaming = false;
 let audioEnabled = false;
 
 // Initialize audio context on first user interaction
+// --- THE AUTOPLAY UNLOCKER ---
 function enableAudio() {
     if (!audioEnabled) {
-        audioEnabled = true;
-        console.log("[Audio] ✅ Audio enabled by user interaction");
+        // Play a microscopic, silent base64 WAV file to securely unlock the HTML5 Audio engine
+        const unlocker = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+
+        unlocker.play().then(() => {
+            audioEnabled = true;
+            console.log("[Audio] 🔓 Browser Autoplay Restrictions Unlocked!");
+
+            // Remove listeners once successfully unlocked to save memory
+            document.removeEventListener("click", enableAudio);
+            document.removeEventListener("keydown", enableAudio);
+            document.removeEventListener("touchstart", enableAudio);
+        }).catch(err => {
+            console.warn("[Audio] Waiting for stronger user gesture to unlock audio...");
+        });
+    }
+}
+
+// Bind to ALL forms of initial interaction, not just clicks
+document.addEventListener("click", enableAudio);
+document.addEventListener("keydown", enableAudio);
+document.addEventListener("touchstart", enableAudio);
+
+
+// --- UPDATE SEND MESSAGE ---
+function sendMessage() {
+    enableAudio(); // Force an unlock attempt the moment you hit send
+
+    const input = document.getElementById("textInput");
+    if (!input || socket.readyState !== WebSocket.OPEN) return;
+    const text = input.value.trim();
+    if (text) {
+        socket.send(JSON.stringify({ type: "user_text", text }));
+        addLog("You: " + text);
+        input.value = "";
     }
 }
 
@@ -61,6 +94,42 @@ function addLog(t) {
     p.textContent = t;
     log.appendChild(p);
 }
+async function playPreemptiveAudio(b64) {
+    if (currentAudioNode) {
+        console.log("[Audio] 🛑 Interrupting current playback for new audio.");
+        currentAudioNode.pause();
+        currentAudioNode.currentTime = 0;
+        currentAudioNode.onended = null;
+        currentAudioNode = null;
+    }
+
+    try {
+        console.log("[Audio] ▶️ Playing new audio payload.");
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+
+        currentAudioNode = new Audio(url);
+
+        currentAudioNode.onended = () => {
+            URL.revokeObjectURL(url);
+            currentAudioNode = null;
+            socket.send(JSON.stringify({ type: "playback_finished" }));
+        };
+
+        await currentAudioNode.play();
+
+    } catch (err) {
+        console.error("[Audio] ❌ Playback failed:", err);
+        if (err.name === "NotAllowedError") {
+            addLog("🔇 Audio blocked - click anywhere to enable");
+        }
+
+        // --- THE FAIL-SAFE UNLOCKER ---
+        // If it fails to play, release the backend lock immediately so it doesn't freeze
+        socket.send(JSON.stringify({ type: "playback_finished" }));
+    }
+}
 
 async function playAudio(b64) {
     console.log("[Audio] ▶️ Playing response audio");
@@ -76,20 +145,11 @@ async function playAudio(b64) {
         if (err.name === "NotAllowedError") {
             addLog("🔇 Audio blocked - click anywhere to enable");
         }
+
+        // --- THE FAIL-SAFE UNLOCKER ---
+        socket.send(JSON.stringify({ type: "playback_finished" }));
     }
 }
-
-function sendMessage() {
-    const input = document.getElementById("textInput");
-    if (!input || socket.readyState !== WebSocket.OPEN) return;
-    const text = input.value.trim();
-    if (text) {
-        socket.send(JSON.stringify({ type: "user_text", text }));
-        addLog("You: " + text);
-        input.value = "";
-    }
-}
-
 async function startAudioStream() {
     if (isStreaming) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();

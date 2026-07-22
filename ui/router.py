@@ -83,6 +83,10 @@ async def _pump_events(ws: WebSocket):
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     pump_task = asyncio.create_task(_pump_events(ws))
+    
+    # Track the active execution worker task
+    active_core_task = None
+
     try:
         await ws.send_json({"type": "state", "state": orion.state.name})
         while True:
@@ -91,16 +95,34 @@ async def websocket_endpoint(ws: WebSocket):
 
             if t == "user_text":
                 telemetry_start()
-                await orion.handle_user_text(msg.get("text", ""))
-                print(telemetry_summary())
+                text_input = msg.get("text", "")
+                
+                # Wrap execution in a non-blocking background task
+                async def run_pipeline():
+                    try:
+                        await orion.handle_user_text(text_input)
+                    except Exception as e:
+                        print(f"[Router Fault] Pipeline error: {e}")
+                    finally:
+                        # Ensures telemetry logs dump immediately when execution finishes
+                        summary = telemetry_summary()
+                        if summary:
+                            print(summary)
+
+                active_core_task = asyncio.create_task(run_pipeline())
 
             elif t == "user_audio":
                 telemetry_start()
                 audio_chunk = base64.b64decode(msg["audio"])
-                print(telemetry_summary())
-                await orion.handle_user_audio(audio_chunk)
+                
+                async def run_audio_pipeline():
+                    await orion.handle_user_audio(audio_chunk)
+                    print(telemetry_summary())
+                    
+                active_core_task = asyncio.create_task(run_audio_pipeline())
 
             elif t == "playback_finished":
+                # The loop is awake and active, so this event can now be captured!
                 orion.playback_finished()
                 await ws.send_json({"type": "state", "state": "idle"})
 
@@ -108,6 +130,8 @@ async def websocket_endpoint(ws: WebSocket):
         print("[Router] ⚠️ WebSocket disconnected")
     finally:
         pump_task.cancel()
+        if active_core_task and not active_core_task.done():
+            active_core_task.cancel()
         with contextlib.suppress(Exception):
             await pump_task
 

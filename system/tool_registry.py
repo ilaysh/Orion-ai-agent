@@ -1,4 +1,3 @@
-# orion_core/system/tool_registry.py
 """
 The Official List of Orion's Hard Capabilities.
 These map 1:1 to methods in the new `skills.py`.

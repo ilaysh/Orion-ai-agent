@@ -75,25 +75,24 @@ def apply_jarvis_polish(audio_data: np.ndarray, sample_rate: int) -> AudioSegmen
         audio_segment = effects.normalize(audio_segment, headroom=0.1)
     return audio_segment
 
-async def speak(text: str) -> Optional[str]:
+async def speak(text: str) -> Optional[dict]:
+    """Generate TTS. Returns a dict with raw float32 samples (for Python-side
+    sounddevice playback) AND base64 WAV (kept for display clients / logging).
+    Returns None on failure.
     """
-    Generates audio and returns Base64 string.
-    Includes Crash Protection & Fallback.
-    """
-    # print(f"[JarvisTTS] 🗣️ speak() called with: {text[:50]}...")
-    if not text or not text.strip(): 
+    if not text or not text.strip():
         print("[JarvisTTS] ⚠️ Empty text, skipping")
         return None
 
     # 1. Sanitize (The Fix for 'words_mismatch')
     safe_text = clean_for_speech(text)
     print(f"[JarvisTTS] ✅ Sanitized: {safe_text}")
-    
+
     try:
         if not _voice:
             print("[JarvisTTS] ⚠️ Voice not loaded. Attempting load...")
             preload_voice()
-            if not _voice: 
+            if not _voice:
                 print("[JarvisTTS] ❌ Failed to load voice")
                 return None
 
@@ -110,12 +109,25 @@ async def speak(text: str) -> Optional[str]:
         # 3. Polish
         final_segment = apply_jarvis_polish(samples, sample_rate)
 
-        # 4. Export
+        # Base64 WAV — retained for display clients (browser shows state; future
+        # Android/Unity clients may consume this) and for logging.
         buf = io.BytesIO()
         final_segment.export(buf, format="wav")
         audio_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        print(f"[JarvisTTS] ✅ Exported {len(audio_b64)} bytes as base64")
-        return audio_b64
+
+        # Raw samples for Python-side playback. Pull them back from the polished
+        # segment so what Python plays == what gets exported (normalized/punchy).
+        polished = np.array(final_segment.get_array_of_samples()).astype(np.float32)
+        # AudioSegment samples are int16; scale back to float32 [-1, 1] for sounddevice.
+        if final_segment.sample_width == 2:
+            polished = polished / 32768.0
+
+        print(f"[JarvisTTS] ✅ Exported {len(audio_b64)} b64 chars + {len(polished)} samples")
+        return {
+            "samples": polished,
+            "sample_rate": final_segment.frame_rate,
+            "b64": audio_b64,
+        }
 
     except Exception as e:
         print(f"[JarvisTTS] 💥 Generation Failed: {e}")

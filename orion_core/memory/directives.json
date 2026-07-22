@@ -1,5 +1,4 @@
-[
-  "Always verify a file exists before reading it.",
-  "If a user intent is unclear, ask for clarification.",
-  "Do not simulate heavy processes; execute them."
-]
+{
+    "mcp_hub": "If using Tavily for E-Commerce or Israeli pricing, apply 'country': 'IL' and 'gl': 'il'. CRITICAL: Do NOT search for US/foreign cartridge part numbers (e.g., PG-275, CL-276) on local Israeli sites. Instead, perform a live search for the printer model itself (e.g., 'Canon TR4700 ink price Israel') to discover the correct regional cartridge variants used in the Israeli market.",
+    "execute_bash": "When searching for specific files/folders by name, OR when counting files in a directory tree, ALWAYS use the `find` command (e.g., `find /path -iname '*robin*'` or `find /path -type f | wc -l`). NEVER use `ls` for searches or deep counts, as it misses subdirectories and is fragile to parse. When asked for disk usage or sizes, use `du -sh /path`."
+}

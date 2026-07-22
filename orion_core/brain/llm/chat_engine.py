@@ -19,61 +19,66 @@ def get_chat_engine():
 
 class ChatEngine:
     def __init__(self):
-        self.engine = None
-        # Using AWQ model - standard model is too large (~15GB) for 16GB VRAM
-        self.model_path = "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ"
+        self.engine = None 
+        self.model_name = "Orion"
+        self.client = AsyncOpenAI(
+            base_url="http://0.0.0.0:8000/v1",
+            api_key="EMPTY"
+        )
+        
+   
+    async def unload(self):
+        print("[ChatEngine] 💤 Unloading requested, but API Server manages VRAM.")
+        pass
 
     async def load(self):
-        if self.engine: return
-        
-        # LAZY IMPORT: Import vllm only when needed
-        from vllm import AsyncLLMEngine, AsyncEngineArgs
-        
-        print(f"[ChatEngine] 🚀 Loading Coder Brain: {self.model_path}")
-        
-        # VRAM CONFIGURATION (RTX 4060 Ti 16GB)
-        # 1. gpu_memory_utilization=0.6 -> Reserves ~9.6GB for Brain. 
-        #    Leaves ~6.4GB for Whisper (1.5GB) + System + Screen.
-        # 2. max_model_len=8192 -> 8k Context is safer for stability.
-        #    (We can try pushing back to 16k later if stable).
-        args = AsyncEngineArgs(
-            model=self.model_path,
-            quantization="awq",
-            dtype="float16",
-            gpu_memory_utilization=0.6, 
-            max_model_len=8192,
-            enforce_eager=True,
-            disable_log_stats=True
-        )
-        self.engine = AsyncLLMEngine.from_engine_args(args)
-        print("[ChatEngine] ✔ Coder Brain loaded (8k Context Active).")
-
-    async def unload(self):
-        if self.engine:
-            import gc
-            import torch
-            self.engine = None
-            gc.collect()
-            torch.cuda.empty_cache()
-            print("[ChatEngine] 💤 Hibernated.")
+        print(f"[ChatEngine] 🚀 Connecting to local API Server: {self.model_name}")
+        print("[ChatEngine] 🔥 Warming up Gemma 4 neural pathways...")
+        try:
+            from orion_core.brain.personality import Personality
+            p = Personality()
+            real_system_prompt = p.get_system_prompt([])
+            # --- FIXED FOR NATIVE GEMMA 4 TOKENS ---
+            warmup_prompt = f"<|turn>system\n{real_system_prompt}\n\nYOU MUST RESPOND ONLY IN VALID JSON.<turn|>\n"
+            await self.client.completions.create(
+                model=self.model_name,
+                prompt=warmup_prompt,
+                max_tokens=1
+            )
+            print("[ChatEngine] ✅ Neural Warmup Complete.")
+        except Exception as e:
+            print(f"[ChatEngine] ⚠️ API Warmup skipped: {e}")
 
     async def generate_chat(self, prompt: str, system_prompt: str, **kwargs) -> str:
-        if not self.engine: await self.load()
-        
-        # Import SamplingParams here since it's only used in this method
-        from vllm import SamplingParams
-        
-        sampling_params = SamplingParams(
-            temperature=kwargs.get("temperature", 0.1),
-            max_tokens=kwargs.get("max_new_tokens", 1024),
-            stop=["<|im_end|>", "<|endoftext|>"]
-        )
-        
+        max_tokens = kwargs.get("max_tokens", 2048)
+        temperature = kwargs.get("temperature", 0.1)
+
+        # --- FIXED FOR NATIVE GEMMA 4 PREFILL SCHEMA ---
         full_prompt = (
-            f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
+            f"<|turn>system\n{system_prompt}\n\nYOU MUST RESPOND ONLY IN VALID JSON.<turn|>\n"
+            f"<|turn>user\n{prompt}<turn|>\n"
+            f"<|turn>model\n```json\n{{\n"
         )
+        
+        try:
+            response = await self.client.completions.create(
+                model=self.model_name,
+                prompt=full_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body={
+                    "repetition_penalty": 1.15,
+                    "frequency_penalty": 0.1,
+                    # --- UPDATED EOG STOP TOKENS ---
+                    "stop": ["<turn|>", "<eos>"]
+                }
+            )
+            full_response = response.choices[0].text
+        except Exception as e:
+            print(f"[ChatEngine] 💥 API Error: {e}")
+            full_response = ""
+            
+        final_text = "{\n" + full_response
         
         request_id = f"req_{asyncio.get_event_loop().time()}"
         results_generator = self.engine.generate(

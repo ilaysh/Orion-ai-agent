@@ -30,9 +30,29 @@ class PeopleManager:
 
     # --- LOOKUPS ---
     def get_person(self, name: str) -> Optional[Dict]:
-        """Finds a person by name (case-insensitive)."""
-        if not name: return None
-        return self.tree["profiles"].get(name.lower())
+        """Finds a person by profile key OR by their stored name (case-insensitive).
+
+        Matching only the dict key broke whenever the key's case differed from the
+        name (a hand-edited "Yafit" key made lookups fail while the person was
+        plainly listed) — a contradiction the model cannot recover from. Matching
+        either makes the store tolerant of however the JSON was written.
+        """
+        if not name:
+            return None
+        target = name.strip().lower()
+        profiles = self.tree.get("profiles", {})
+        # 1. Exact key match (the common, fast path).
+        if target in profiles:
+            return profiles[target]
+        # 2. Case-insensitive key match.
+        for key, prof in profiles.items():
+            if key.strip().lower() == target:
+                return prof
+        # 3. Match on the stored display name.
+        for prof in profiles.values():
+            if str(prof.get("name", "")).strip().lower() == target:
+                return prof
+        return None
 
     def get_owner_name(self) -> str:
         """Returns the name of the System Owner."""

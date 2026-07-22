@@ -1,4 +1,40 @@
 {
-  "owner": null,
-  "profiles": {}
+  "owner": "ilay",
+  "profiles": {
+    "ilay": {
+      "name": "ilay",
+      "relation": "Owner",
+      "role": "System Owner",
+      "links": {},
+      "attributes": {},
+      "restrictions": [],
+      "face_ids": [],
+      "met_at": "2026-02-24"
+    },
+    "yafit": {
+      "name": "Yafit",
+      "relation": "Wife",
+      "role": "Family",
+      "links": {},
+      "attributes": {},
+      "restrictions": [],
+      "face_ids": [],
+      "met_at": "2026-02-24"
+    },
+    "leroy": {
+      "name": "Leroy",
+      "relation": "son",
+      "role": "family",
+      "links": {},
+      "attributes": {
+        "favorite_color": "Red",
+        "age": "6",
+        "birth_date": "2020-09-10",
+        "favorite_toy": "T-Rex dinosaur and police cars"
+      },
+      "restrictions": [],
+      "face_ids": [],
+      "met_at": "2026-02-25"
+    }
+  }
 }
